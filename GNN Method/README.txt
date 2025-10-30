@@ -1,0 +1,1 @@
+This is the GNN method directory for artery and vessel segmentation.
