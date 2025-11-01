@@ -1,0 +1,141 @@
+defaults:
+  - dataset_generation/default@dataset.3Dircadb1
+  - dataset_generation/default@dataset.DeepVess
+  - dataset_generation/default@dataset.DeepVesselNet_syncrotone
+  - dataset_generation/default@dataset.DeepVesselNet_tof_mra
+  - dataset_generation/default@dataset.HiP-CT
+  - dataset_generation/default@dataset.HRKidney
+  - dataset_generation/default@dataset.Lightsheet_no_rot
+  - dataset_generation/default@dataset.MiniVess
+  - dataset_generation/default@dataset.TubeNet_2Photon
+  - dataset_generation/default@dataset.TubeNet_MRI
+  - dataset_generation/default@dataset.TubeTK
+  - dataset_generation/default@dataset.VesselExpress_Figure2
+  - dataset_generation/default@dataset.VesselExpress_Heart
+  - dataset_generation/default@dataset.VesselExpress_Bladder
+  - dataset_generation/default@dataset.VesSAP_anno_c0_no_rot
+  - dataset_generation/default@dataset.VesSAP_anno_c1_no_rot
+  - dataset_generation/default@dataset.CSD
+  - dataset_generation/default@dataset.TopCoW_ct
+  - dataset_generation/default@dataset.TopCoW_mra
+  - dataset_generation/default@dataset.OCTA_no_rot
+  - dataset_generation/default@dataset.SMILE
+  - dataset_generation/default@dataset.BvEM
+  - dataset_generation/default@dataset.MSD_Task8
+  - _self_
+
+input_size: [128, 128, 128]
+path: /path/to/d_real #TODO
+generate_datasets:
+  [
+    3Dircadb1,
+    DeepVess,
+    DeepVesselNet_syncrotone,
+    DeepVesselNet_tof_mra,
+    HiP-CT,
+    HRKidney,
+    Lightsheet_no_rot,
+    MiniVess,
+    TubeNet_2Photon,
+    TubeNet_MRI,
+    TubeTK,
+    VesselExpress_Figure2,
+    VesselExpress_Heart,
+    VesselExpress_Bladder,
+    VesSAP_anno_c0_no_rot,
+    VesSAP_anno_c1_no_rot,
+    CSD,
+    TopCoW_ct,
+    TopCoW_mra,
+    # OCTA_no_rot,
+    # SMILE,
+    # BvEM,
+    # MSD_Task8
+  ]
+cpus: 64
+
+dataset:
+  3Dircadb1:
+    num_samples: 5000
+    path: /path/to/preprocessed/3Dircadb1 # TODO
+  DeepVess:
+    num_samples: 5000
+    path: /path/to/preprocessed/DeepVess # TODO
+  DeepVesselNet_syncrotone:
+    num_samples: 10000
+    path: /path/to/preprocessed/DeepVesselNet_syncrotone # TODO
+  DeepVesselNet_tof_mra:
+    num_samples: 10000
+    path: /path/to/preprocessed/DeepVesselNet_tof_mra # TODO
+  HiP-CT:
+    num_samples: 50000
+    path: /path/to/preprocessed/HiP-CT # TODO
+  HRKidney:
+    num_samples: 50000
+    path: /path/to/preprocessed/HR-Kidney # TODO
+  Lightsheet_no_rot:
+    num_samples: 50000
+    path: /path/to/preprocessed/lightsheet # TODO
+    transforms_config:
+      p_flip: [0.0, 0.5, 0.5]
+      rotation_range: [0.175, 0.0, 0.0]
+      use_percentiles_intensity_scaling: True
+  MiniVess:
+    num_samples: 50000
+    path: /path/to/preprocessed/MiniVess # TODO
+  TubeNet_2Photon:
+    num_samples: 1000
+    path: /path/to/preprocessed/TubeNet_2Photon # TODO
+  TubeNet_MRI:
+    num_samples: 5000
+    path: /path/to/preprocessed/TubeNet_MRI # TODO
+  TubeTK:
+    num_samples: 50000
+    path: /path/to/preprocessed/TubeTK # TODO
+  VesselExpress_Figure2:
+    num_samples: 10000
+    path: /path/to/preprocessed/VesselExpress_Figure2 # TODO
+  VesselExpress_Heart:
+    num_samples: 10000
+    path: /path/to/preprocessed/VesselExpress_Heart # TODO
+  VesselExpress_Bladder:
+    num_samples: 10000
+    path: /path/to/preprocessed/VesselExpress_Bladder # TODO
+  VesSAP_anno_c0_no_rot:
+    num_samples: 10000
+    path: /path/to/preprocessed/VesSAP_anno_C00 # TODO
+    transforms_config:
+      p_flip: [0.0, 0.5, 0.5]
+      rotation_range: [0.175, 0.0, 0.0]
+      use_percentiles_intensity_scaling: True
+  VesSAP_anno_c1_no_rot:
+    num_samples: 10000
+    path: /path/to/preprocessed/VesSAP_anno_C01 # TODO
+    transforms_config:
+      p_flip: [0.0, 0.5, 0.5]
+      rotation_range: [0.175, 0.0, 0.0]
+      use_percentiles_intensity_scaling: True
+  CSD:
+    num_samples: 10000
+    path: /path/to/preprocessed/Cerebrovascular_Segmentation_Dataset # TODO
+  TopCoW_ct:
+    num_samples: 10000
+    path: /path/to/preprocessed/TopCoW_ct # TODO
+  TopCoW_mra:
+    num_samples: 10000
+    path: /path/to/preprocessed/TopCoW_mra # TODO
+  OCTA_no_rot:
+    num_samples: 50000
+    path: /path/to/preprocessed/OCTA # TODO
+    transforms_config:
+        p_flip: [0.0, 0.5, 0.5]
+        rotation_range: [0.175, 0.0, 0.0]
+  SMILE:
+    num_samples: 5000
+    path: /path/to/preprocessed/SMILE # TODO
+  MSD_Task8:
+    num_samples: 50000
+    path: /path/to/preprocessed/MSD_Task8 # TODO
+  BvEM:
+    num_samples: 50000
+    path: /path/to/preprocessed/BvEM # TODO

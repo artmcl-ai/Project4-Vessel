@@ -1,0 +1,14 @@
+.vscode
+.hydra
+*egg-info
+*.pyc
+*.log
+*.png
+__pycache__
+
+experiments
+data
+runs
+ckpts
+outputs
+wandb

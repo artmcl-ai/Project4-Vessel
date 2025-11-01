@@ -1,0 +1,74 @@
+DATA_GEN:
+  OUT_DIR: /path/to/d_drand  #TODO
+  DATASET_LABEL: /path/to/foreground_geom  #TODO
+  DATASET_BACKGROUND: /path/to/background #TODO
+
+  IMG_SIZE: 128
+  BATCH_SIZE: 16
+  NUM_WORKERS: 16
+
+  TRANSFORM_LABEL: true           # spatial transforms on labels
+  LABEL:
+    P_FLIP: [0.5, 0.5, 0.5]
+    P_ROTATE: [0.5, 0.5, 0.5]
+    P_ZOOM: 0.4
+    P_ELASTIC: 0.3
+    P_DILATE: 0.1
+    P_BINARY_SMOOTH: 0.9
+
+    MIN_ZOOM: 1.0
+    MAX_ZOOM: 2.0
+    ELASTIC_SIGMA: [15, 20]
+    ELASTIC_MAGNITUDE: [2500, 5000]
+    DILATE_MAX_STEPS: 1
+    BINARY_SMOOTH_SIGMA: 1
+    BINARY_SMOOTH_THRESH: 0.2
+
+  ADD_BACKGROUND: true            # bg merging and fg intensity transforms
+  P_MERGING_MODES: [0.5, 0.5]     # [paint, add_sub]
+  FOREGROUND:
+    DELTA_BG: 0.4
+
+    P_FG_TRANSFORM: [0.15, 0.175, 0.2, 0.2, 0.15, 0.075, 0.05]   # [none, bias_field, gauss_noise, gauss_smooth, dropout, roll, hull]
+
+    BIAS_FIELD_DEGREE: 3
+    BIAS_FIELD_RANGE: [-0.5, 0.5]
+    GAUSSIAN_NOISE_MEAN: 0
+    GAUSSIAN_NOISE_STD: 1
+    GAUSSIAN_SMOOTH_SIGMA: [2, 6]
+    DROPOUT: 0.5
+    ROLL_RANGE: [-3, 3]
+    HULL_THICKNESS_RANGE: [2, 6]
+
+  BACKGROUND:
+    P_INVERT: 0.3
+
+  TRANSFORM_INTENSITY: true       # transform intensity of merged, final image
+  INTENSITY:
+    P_BIAS_FIELD: 0.7
+    P_GAUSSIAN_NOISE: 0.6
+    P_KSPACE_SPIKE: 0.2
+    P_CONTRAST: 0.2
+    P_GAUSSIAN_SMOOTH: 0.9
+    P_GAUSSIAN_SMOOTH_COMMON_SIGMA: 0.7
+    P_RICIAN_NOISE: 0.2
+    P_GIBBS_NOISE: 0.1
+    P_GAUSSIAN_SHARPEN: 0.2
+    P_HISTOGRAM_SHIFT: 0.1
+    P_MEDIAN_SMOOTH: 0
+
+    BIAS_FIELD_DEGREE: 3
+    BIAS_FIELD_RANGE: [-0.2, 0.2]
+    GAUSSIAN_NOISE_MEAN: 0
+    GAUSSIAN_NOISE_STD: 0.25
+    CONTRAST_GAMMA: [0.5, 1.5]
+    GAUSSIAN_SMOOTH_SIGMA_RANGE: [0.25, 1.5]
+    GAUSSIAN_SMOOTH_SIGMA_X: [0.0, 2]
+    GAUSSIAN_SMOOTH_SIGMA_Y: [0.0, 2]
+    GAUSSIAN_SMOOTH_SIGMA_Z: [0.0, 2]
+    RICIAN_NOISE_MEAN: 0
+    RICIAN_NOISE_STD: 0.1
+    GIBBS_ALPHA: [0.0, 0.75]
+    GAUSSIAN_SHARPEN_ALPHA: [10.0, 20.0]
+    HISTOGRAM_SHIFT_CPOINTS: [10, 25]
+    MEDIAN_SMOOTH_RADIUS: [1, 4]

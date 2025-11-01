@@ -1,0 +1,46 @@
+# 3-class artery/vein/background adaptation of vesselFM
+experiment: av_ct
+seed: 42
+
+data:
+  train_csv: data/train.csv        # columns: image,label
+  val_csv:   data/val.csv
+  spacing: [1.0, 1.0, 1.0]
+  clip_hu: [-1000, 600]
+  zscore: true
+  patch_size: [96, 96, 96]
+  samples_per_volume: 4
+  min_fg_fraction: 0.02            # hard-example mining
+  labels: {background: 0, artery: 1, vein: 2}
+
+model:
+  num_classes: 3
+  # if the repo exposes a head/out_channels param, this will be read there too
+  dropout: 0.1
+
+loss:
+  dice_ce_weight: 1.0
+  class_weights: [0.2, 0.4, 0.4]   # tweak per dataset imbalance
+  use_soft_cldice: true
+  soft_cldice_weight: 0.2
+  soft_cldice_iters: 8
+
+optim:
+  lr_stage1: 3.0e-4
+  lr_stage2: 3.0e-5
+  weight_decay: 1.0e-5
+  epochs_stage1: 30
+  epochs_stage2: 30
+  batch_size: 2
+  amp: true
+
+augment:
+  gamma: [0.7, 1.5]
+  noise_std: 0.01
+  flip_prob: 0.5
+  elastic_prob: 0.2
+
+inference:
+  tta: false
+  sigmoid_threshold: 0.5
+  keep_small_cc_voxels: 50

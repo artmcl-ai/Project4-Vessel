@@ -1,0 +1,59 @@
+DATA:
+  LEN_EPOCH: 10000
+  BATCH_SIZE: 3
+  IMG_SIZE: 128
+  NUM_WORKERS: 8
+
+TRANSFORMS: # online
+  USE_TRANSFORMS: true
+  P_FLIP: [0.5, 0.5, 0.5]
+  P_ROTATE: [0.5, 0.5, 0.5]
+
+DATA_GEN:
+  DIFF: # diffusion-based data gen
+    TAG: 'fm'
+    GPU_ID: 0
+    WARMUP_STEPS: 500
+    EPOCHS: 200
+    LR: 1e-5
+    SAVE_INTERVAL: 10000
+
+    CLASSES:
+      /path/to/d_drand: [0, 0.3] #TODO
+      /path/to/d_real/3Dircadb1: [1, 0.04375] #TODO
+      /path/to/d_real/CSD: [3, 0.04375] #TODO
+      /path/to/d_real/DeepVess: [4, 0.04375] #TODO
+      /path/to/d_real/DeepVesselNet_syncrotone: [5, 0.04375] #TODO
+      /path/to/d_real/DeepVesselNet_tof_mra: [6, 0.04375] #TODO
+      /path/to/d_real/HRKidney_thres: [7, 0.04375] #TODO
+      /path/to/d_real/HiP-CT: [8, 0.04375] #TODO
+      /path/to/d_real/Lightsheet_no_rot: [9, 0.04375] #TODO
+      /path/to/d_real/MiniVess: [11, 0.04375] #TODO
+      /path/to/d_real/TopCoW_ct: [14, 0.04375] #TODO
+      /path/to/d_real/TopCoW_mra: [15, 0.04375] #TODO
+      /path/to/d_real/TubeNet_2Photon: [16, 0.04375] #TODO
+      /path/to/d_real/TubeNet_MRI: [17, 0.04375] #TODO
+      /path/to/d_real/TubeTK: [18, 0.04375] #TODO
+      /path/to/d_real/VesSAP_anno_c0_no_rot: [19, 0.021875] #TODO
+      /path/to/d_real/VesSAP_anno_c1_no_rot: [20, 0.021875] #TODO
+      /path/to/d_real/VesselExpress_Figure2: [21, 0.01458] #TODO
+      /path/to/d_real/VesselExpress_Heart: [22, 0.01458] #TODO
+      /path/to/d_real/VesselExpress_Bladder: [23, 0.01459] #TODO
+      # /path/to/d_real/BvEM: [2, 0.035] #TODO
+      # /path/to/d_real/MSD_Task8: [10, 0.035] #TODO
+      # /path/to/d_real/OCTA_no_rot: [12, 0.035] #TODO
+      # /path/to/d_real/SMILE: [13, 0.035] #TODO
+
+    LAYERS: 1
+    NUM_CHANNELS: 64
+    
+    CLASS_COND: True
+    CFG: True
+    CFG_WEIGHT: 1     # typically 5.0 - 20.0
+    P_CLS_DROP: 0.1   # typically 0.1 - 0.2
+
+    FLOW_MATCHING:
+      USE_LOGNORM_IS: True
+      LOGNORM_MU: 0.0
+      LOGNORM_SIGMA: 1.0
+      TIMESTEPS: 100
