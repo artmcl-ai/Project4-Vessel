@@ -1,11 +1,9 @@
 import json
 import matplotlib.pyplot as plt
 
-# 载入 metrics.json
 with open("data/nnUNet_results/Dataset001_nnunet/preds/ensemble_seed1-9/metrics.json") as f:
     m = json.load(f)
 
-# 提取 per-case Dice
 dice1 = [c["metrics"]["1"]["Dice"] for c in m["metric_per_case"]]
 dice2 = [c["metrics"]["2"]["Dice"] for c in m["metric_per_case"]]
 
