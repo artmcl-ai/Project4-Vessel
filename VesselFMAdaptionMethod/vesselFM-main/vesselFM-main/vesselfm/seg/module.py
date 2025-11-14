@@ -59,9 +59,15 @@ class PLModule(lightning.LightningModule):
         loss = self.loss(pred_mask, mask)
         self.log("val_loss", loss.item(), logger=(self.rank == 0))
 
+        # pred_mask: (B, 3, D, H, W) logits for {bg, artery, vein}
+        probs = torch.softmax(pred_mask, dim=1)      # (B,3,D,H,W)
+
+        union = 1.0 - probs[:, 0:1]                  # 1 - P(background) = P(vessel union)
+
         metrics = self.evaluator.estimate_metrics(
-            pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold
+            union.squeeze(), mask.squeeze(), threshold=self.prediction_threshold
         )
+
         for metric, value in metrics.items():
             value = value.item() if isinstance(value, (torch.Tensor, np.ndarray)) else value
             self.log(f"val_{name[0]}_{metric}", value, logger=(self.rank == 0))
@@ -93,9 +99,13 @@ class PLModuleFinetune(PLModule):
             loss = self.loss(pred_mask, mask)
             self.log(f"{self.dataset_name}_val_loss", loss.item())
 
+            probs = torch.softmax(pred_mask, dim=1)      # (B,3,D,H,W)
+            union = 1.0 - probs[:, 0:1]
+
             metrics = self.evaluator.estimate_metrics(
-                pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold, fast=True
+                union.squeeze(), mask.squeeze(), threshold=self.prediction_threshold, fast=True
             )
+
             for name, value in metrics.items():
                 value = value.item() if isinstance(value, (torch.Tensor, np.ndarray)) else value
                 self.log(f"{self.dataset_name}_val_{name}", value)
@@ -112,9 +122,13 @@ class PLModuleFinetune(PLModule):
             loss = self.loss(pred_mask, mask)
             self.log(f"{self.dataset_name}_test_loss", loss.item())
 
+            probs = torch.softmax(pred_mask, dim=1)
+            union = 1.0 - probs[:, 0:1]
+
             metrics = self.evaluator.estimate_metrics(
-                pred_mask.sigmoid().squeeze(), mask.squeeze(), threshold=self.prediction_threshold
+                union.squeeze(), mask.squeeze(), threshold=self.prediction_threshold
             )
+
             for name, value in metrics.items():
                 value = value.item() if isinstance(value, (torch.Tensor, np.ndarray)) else value
                 self.log(f"{self.dataset_name}_test_{name}", value)

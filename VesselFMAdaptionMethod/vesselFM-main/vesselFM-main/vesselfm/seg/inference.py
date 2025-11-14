@@ -35,7 +35,7 @@ def load_model(cfg, device):
         )
 
     model = hydra.utils.instantiate(cfg.model)
-    model.load_state_dict(ckpt)
+    model.load_state_dict(ckpt, strict=False)
     return model
 
 def get_paths(cfg):
@@ -120,27 +120,39 @@ def main(cfg):
 
                 original_shape = image.shape
                 image = resample(image, factor=scale)
-                logits = inferer(image, model)
+                logits = inferer(image, model)       # (1,3,D,H,W)
+                probs  = torch.softmax(logits, dim=1).cpu().squeeze()   # (3,D,H,W)
+                label  = probs.argmax(0).numpy().astype(np.uint8)       # 0:bg,1:A,2:V
                 logits = resample(logits, target_shape=original_shape)
                 preds.append(logits.cpu().squeeze())
 
-            # merging
-            if cfg.merging.max:
-                pred = torch.stack(preds).max(dim=0)[0].sigmoid()
-            else:
-                pred = torch.stack(preds).mean(dim=0).sigmoid()
-            pred_thresh = (pred > cfg.merging.threshold).numpy()
+                # Merging (multiclass)
+                # preds contains per-scale logits with shape (3, D, H, W) after .squeeze()
+                # Convert each to probabilities and merge across scales
+                if cfg.merging.max:
+                    probs = torch.stack([F.softmax(p, dim=0) for p in preds]).max(dim=0)[0]  # (3,D,H,W)
+                else:
+                    probs = torch.stack([F.softmax(p, dim=0) for p in preds]).mean(dim=0)   # (3,D,H,W)
 
-            # post-processing
-            if cfg.post.apply:
-                pred_thresh = remove_small_objects(
-                    pred_thresh, min_size=cfg.post.small_objects_min_size, connectivity=cfg.post.small_objects_connectivity
+                # Argmax over classes -> labelmap {0:bg, 1:artery, 2:vein}
+                label = probs.argmax(0).cpu().numpy().astype(np.uint8)  # (D,H,W)
+
+                # Post-processing (class-wise CC cleanup)
+                if cfg.post.apply:
+                    lbl = np.zeros_like(label, dtype=np.uint8)
+                    for c in (1, 2):  # artery, vein
+                        cm = (label == c)
+                        cm = remove_small_objects(
+                            cm, min_size=cfg.post.small_objects_min_size, connectivity=cfg.post.small_objects_connectivity
+                        )
+                        lbl[cm] = c
+                    label = lbl
+
+                # Save final labelmap
+                save_writer.write_seg(
+                    label, output_folder / f"{image_path.name.split('.')[0]}_{cfg.file_app}pred.{file_ending}"
                 )
 
-            # save final pred
-            save_writer.write_seg(
-                pred_thresh.astype(np.uint8), output_folder / f"{image_path.name.split('.')[0]}_{cfg.file_app}pred.{file_ending}"
-            )
 
             if mask_paths is not None:
                 metrics = Evaluator().estimate_metrics(pred, mask, threshold=cfg.merging.threshold) # no post-processing
