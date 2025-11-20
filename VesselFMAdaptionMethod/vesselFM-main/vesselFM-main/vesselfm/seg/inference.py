@@ -18,9 +18,19 @@ from vesselfm.seg.utils.data import generate_transforms
 from vesselfm.seg.utils.io import determine_reader_writer
 from vesselfm.seg.utils.evaluation import Evaluator, calculate_mean_metrics
 
+from omegaconf import OmegaConf
+
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
+
+def build_model(num_classes=3, dropout=0.0):
+    cfg = OmegaConf.load("configs/inference.yaml")
+    cfg.model.num_classes = num_classes
+    if hasattr(cfg.model, "dropout"):
+        cfg.model.dropout = dropout
+    model = hydra.utils.instantiate(cfg.model)
+    return model
 
 def load_model(cfg, device):
     try:

@@ -15,14 +15,22 @@ def set_seed(s):
     random.seed(s); np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed_all(s)
 
 def freeze_backbone(model):
-    for n,p in model.backbone.named_parameters():
-        p.requires_grad = False
+    """
+    For MONAI DynUNet, treat everything except the output (and optional deep
+    supervision heads) as the backbone. Freeze all those params.
+    """
+    for name, p in model.named_parameters():
+        # Keep only the segmentation head trainable
+        if "output_block" in name or "deep_supervision_heads" in name:
+            p.requires_grad = True
+        else:
+            p.requires_grad = False
 
 def unfreeze_encoder_tail(model, n_stages=2):
-    for n,p in model.backbone.named_parameters():
-        if any(f"stage{i}" in n for i in range(100)):  # fallback: unfreeze all, then re-freeze below
-            p.requires_grad = True
-    # Re-freeze early stages if backbone exposes them
+    """
+    Stage 2 in train_av.py continues training the head with a lower LR.
+    """
+    return
 
 def one_epoch(model, loader, loss_fn, opt, scaler, device, amp=True):
     model.train()
