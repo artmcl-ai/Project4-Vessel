@@ -102,68 +102,84 @@ def main(cfg):
     # loop over images
     metrics_dict = {}
     with torch.no_grad():
-        for idx, image_path in tqdm(enumerate(image_paths), total=len(image_paths), desc="Processing images."):
-            preds = [] # average over test time augmentations
+        for idx, image_path in tqdm(
+            enumerate(image_paths),
+            total=len(image_paths),
+            desc="Processing images.",
+        ):
+            preds = []  # per-scale logits
+            mask = None
+
             for scale in cfg.tta.scales:
-                # apply pre-processing transforms
-                image = transforms(image_reader_writer.read_images(image_path)[0].astype(np.float32))[None].to(device)
-                mask = torch.tensor(image_reader_writer.read_images(mask_paths[idx])[0]).bool() if mask_paths else None
-  
-                # apply test time augmentation
+                # read image (and mask if available)
+                image_np = image_reader_writer.read_images(image_path)[0].astype(np.float32)
+                image = transforms(image_np)[None].to(device)
+
+                if mask_paths is not None:
+                    mask_np = image_reader_writer.read_images(mask_paths[idx])[0]
+                    mask = torch.tensor(mask_np).bool()
+
+                # TTA intensity transforms
                 if cfg.tta.invert:
-                    image = 1 - image if image.mean() > cfg.tta.invert_mean_thresh else image
-                    
+                    if image.mean() > cfg.tta.invert_mean_thresh:
+                        image = 1 - image
                 if cfg.tta.equalize_hist:
                     image_np = image.cpu().squeeze().numpy()
                     image_equal_hist_np = equalize_hist(image_np, nbins=cfg.tta.hist_bins)
                     image = torch.from_numpy(image_equal_hist_np).to(image.device)[None][None]
 
+                # resample for scale, run model, resample back
                 original_shape = image.shape
-                image = resample(image, factor=scale)
-                logits = inferer(image, model)       # (1,3,D,H,W)
-                probs  = torch.softmax(logits, dim=1).cpu().squeeze()   # (3,D,H,W)
-                label  = probs.argmax(0).numpy().astype(np.uint8)       # 0:bg,1:A,2:V
-                logits = resample(logits, target_shape=original_shape)
-                preds.append(logits.cpu().squeeze())
+                image_scaled = resample(image, factor=scale)
+                logits = inferer(image_scaled, model)                     # (1,3,D,H,W)
+                logits = resample(logits, target_shape=original_shape)    # back to original patch grid
+                preds.append(logits.cpu().squeeze())                      # (3,D,H,W)
 
-                # Merging (multiclass)
-                # preds contains per-scale logits with shape (3, D, H, W) after .squeeze()
-                # Convert each to probabilities and merge across scales
-                if cfg.merging.max:
-                    probs = torch.stack([F.softmax(p, dim=0) for p in preds]).max(dim=0)[0]  # (3,D,H,W)
-                else:
-                    probs = torch.stack([F.softmax(p, dim=0) for p in preds]).mean(dim=0)   # (3,D,H,W)
+            # Merge TTA scales (multiclass A/V/BG)
+            if cfg.merging.max:
+                probs = torch.stack([F.softmax(p, dim=0) for p in preds]).max(dim=0)[0]   # (3,D,H,W)
+            else:
+                probs = torch.stack([F.softmax(p, dim=0) for p in preds]).mean(dim=0)    # (3,D,H,W)
 
-                # Argmax over classes -> labelmap {0:bg, 1:artery, 2:vein}
-                label = probs.argmax(0).cpu().numpy().astype(np.uint8)  # (D,H,W)
+            # Argmax -> labelmap {0:bg, 1:artery, 2:vein}
+            label = probs.argmax(0).cpu().numpy().astype(np.uint8)                        # (D,H,W)
 
-                # Post-processing (class-wise CC cleanup)
-                if cfg.post.apply:
-                    lbl = np.zeros_like(label, dtype=np.uint8)
-                    for c in (1, 2):  # artery, vein
-                        cm = (label == c)
-                        cm = remove_small_objects(
-                            cm, min_size=cfg.post.small_objects_min_size, connectivity=cfg.post.small_objects_connectivity
-                        )
-                        lbl[cm] = c
-                    label = lbl
+            # Class-wise CC cleanup
+            if cfg.post.apply:
+                cleaned = np.zeros_like(label, dtype=np.uint8)
+                for c in (1, 2):  # artery, vein
+                    cm = (label == c)
+                    cm = remove_small_objects(
+                        cm,
+                        min_size=cfg.post.small_objects_min_size,
+                        connectivity=cfg.post.small_objects_connectivity,
+                    )
+                    cleaned[cm] = c
+                label = cleaned
 
-                # Save final labelmap
-                save_writer.write_seg(
-                    label, output_folder / f"{image_path.name.split('.')[0]}_{cfg.file_app}pred.{file_ending}"
+            # Save final labelmap
+            save_writer.write_seg(
+                label,
+                output_folder / f"{image_path.name.split('.')[0]}_{cfg.file_app}pred.{file_ending}",
+            )
+
+            # Metrics (if GT masks available)
+            if mask_paths is not None and mask is not None:
+                # Union vessel probability = 1 - P(background)
+                union_prob = 1.0 - probs[0]  # probs[0] is class 0 = background
+                metrics = Evaluator().estimate_metrics(
+                    union_prob, mask, threshold=cfg.merging.threshold
                 )
-
-
-            if mask_paths is not None:
-                metrics = Evaluator().estimate_metrics(pred, mask, threshold=cfg.merging.threshold) # no post-processing
                 logger.info(f"Dice of {image_path.name.split('.')[0]}: {metrics['dice'].item()}")
                 logger.info(f"clDice of {image_path.name.split('.')[0]}: {metrics['cldice'].item()}")
                 metrics_dict[image_path.name.split('.')[0]] = metrics
 
-    if mask_paths is not None:
-        mean_metrics = calculate_mean_metrics(list(metrics_dict.values()), round_to=cfg.round_to)
-        logger.info(f"Mean metrics: dice {mean_metrics['dice'].item()}, cldice {mean_metrics['cldice'].item()}")
-    logger.info("Done.")
+    # Summarize over all images
+    if mask_paths is not None and len(metrics_dict) > 0:
+        mean_metrics = calculate_mean_metrics(metrics_dict)
+        logger.info(f"Mean Dice: {mean_metrics['dice']:.4f}")
+        logger.info(f"Mean clDice: {mean_metrics['cldice']:.4f}")
+
 
 
 if __name__ == "__main__":
