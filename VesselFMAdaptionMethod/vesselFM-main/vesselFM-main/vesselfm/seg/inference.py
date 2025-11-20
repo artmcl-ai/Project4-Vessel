@@ -25,12 +25,32 @@ warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
 
 def build_model(num_classes=3, dropout=0.0):
-    cfg = OmegaConf.load("configs/inference.yaml")
-    cfg.model.num_classes = num_classes
-    if hasattr(cfg.model, "dropout"):
-        cfg.model.dropout = dropout
-    model = hydra.utils.instantiate(cfg.model)
+    # Load inference config to get the same model definition with ckpt_path
+    cfg_inf = OmegaConf.load("configs/inference.yaml")
+
+    # Override num_classes for the 3-class head
+    cfg_inf.model.num_classes = num_classes
+    if hasattr(cfg_inf.model, "dropout"):
+        cfg_inf.model.dropout = dropout
+
+    # Load pretrained VesselFM weights
+    try:
+        logger.info(f"[build_model] Loading pretrained weights from {cfg_inf.ckpt_path}.")
+        ckpt = torch.load(Path(cfg_inf.ckpt_path), map_location="cpu", weights_only=True)
+    except Exception:
+        logger.info("[build_model] Loading pretrained weights from Hugging Face.")
+        hf_hub_download(repo_id="bwittmann/vesselFM", filename="meta.yaml")  # track downloads
+        ckpt = torch.load(
+            hf_hub_download(repo_id="bwittmann/vesselFM", filename="vesselFM_base.pt"),
+            map_location="cpu",
+            weights_only=True,
+        )
+
+    # Instantiate the model and load weights
+    model = hydra.utils.instantiate(cfg_inf.model)
+    model.load_state_dict(ckpt, strict=False)
     return model
+
 
 def load_model(cfg, device):
     try:
