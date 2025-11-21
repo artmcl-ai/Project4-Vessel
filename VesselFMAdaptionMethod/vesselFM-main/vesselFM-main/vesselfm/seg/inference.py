@@ -8,6 +8,7 @@ import torch
 import torch.nn.functional as F
 import hydra
 import numpy as np
+import json
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download
 from monai.inferers import SlidingWindowInfererAdapt
@@ -209,8 +210,18 @@ def main(cfg):
         mean_metrics = calculate_mean_metrics(metrics_dict)
         logger.info(f"Mean Dice: {mean_metrics['dice']:.4f}")
         logger.info(f"Mean clDice: {mean_metrics['cldice']:.4f}")
-
-
+        with open(output_folder / "metrics_per_volume.json", "w") as f:
+            json.dump(
+                {k: {m: float(v[m].item()) for m in v} for k, v in metrics_dict.items()},
+                f,
+                indent=2,
+            )
+        with open(output_folder / "metrics_mean.json", "w") as f:
+            json.dump(
+                {m: float(mean_metrics[m]) for m in mean_metrics},
+                f,
+                indent=2,
+            )
 
 if __name__ == "__main__":
     main()
