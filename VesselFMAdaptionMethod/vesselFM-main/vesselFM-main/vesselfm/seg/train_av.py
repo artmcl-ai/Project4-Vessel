@@ -88,13 +88,32 @@ def make_items_from_dirs(image_dir, label_dir):
     image_dir = pathlib.Path(image_dir)
     label_dir = pathlib.Path(label_dir)
     items = []
+
     for img_path in sorted(image_dir.glob("*.nii*")):
-        lab_path = label_dir / img_path.name
+        img_name = img_path.name
+
+        # Handle pattern: image_###.nii.gz -> label_###.nii.gz
+        if img_name.startswith("image_"):
+            lbl_name = "label_" + img_name[len("image_"):]
+        else:
+            # Fallback: same filename if matching names
+            lbl_name = img_name
+
+        lab_path = label_dir / lbl_name
         if not lab_path.exists():
-            print(f"WARNING: no label for {img_path.name}, skipping")
+            print(f"WARNING: no label for {img_name}, expected {lab_path}")
             continue
+
         items.append((str(img_path), str(lab_path)))
+
+    if not items:
+        raise RuntimeError(
+            f"No image/label pairs found in {image_dir} and {label_dir}. "
+            f"Check that filenames follow image_### / label_### pattern."
+        )
+
     return items
+
 
 
 def make_loader(kind, cfg, train=True):
