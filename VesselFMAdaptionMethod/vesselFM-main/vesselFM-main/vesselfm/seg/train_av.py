@@ -137,7 +137,7 @@ def make_loader(kind, cfg, train=True):
         ds,
         batch_size=cfg["optim"]["batch_size"],
         shuffle=train,
-        num_workers=4, # Switch back to 4 after testing
+        num_workers=16, # Switch back to 4 after testing
         pin_memory=True,
     )
 
