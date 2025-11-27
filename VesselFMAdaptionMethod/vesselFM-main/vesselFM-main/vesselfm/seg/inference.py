@@ -27,7 +27,10 @@ logger = logging.getLogger(__name__)
 
 def build_model(num_classes=3, dropout=0.0):
     # Load inference config to get the same model definition with ckpt_path
-    cfg_inf = OmegaConf.load("configs/inference.yaml")
+    here = Path(__file__).resolve().parent
+    cfg_path = here / "configs" / "inference.yaml"   # -> vesselfm/seg/configs/inference.yaml
+
+    cfg_inf = OmegaConf.load(cfg_path)
 
     # Override num_classes for the 3-class head
     cfg_inf.model.num_classes = num_classes
