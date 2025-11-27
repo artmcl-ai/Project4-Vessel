@@ -19,19 +19,20 @@ def set_seed(s):
 
 def freeze_backbone(model):
     """
-    For MONAI DynUNet, treat everything except the output (and optional deep
-    supervision heads) as the backbone. Freeze all those params.
+    For MONAI DynUNet:
+      - freeze all encoder/decoder weights
+      - leave only the final_conv (classification head) trainable
     """
     for name, p in model.named_parameters():
         if "output_block" in name or "deep_supervision_heads" in name:
-            p.requires_grad = True   # keep head trainable
+            p.requires_grad = True    # head stays trainable
         else:
-            p.requires_grad = False  # freeze backbone
+            p.requires_grad = False   # backbone frozen
 
 
 def unfreeze_encoder_tail(model, n_stages=2):
     """
-    To respect the 'no backbone retrain' constraint, we keep this as a no-op.
+    To respect the no backbone retrain constraint, keep this as a no-op.
     Stage 2 just continues training the head with a lower LR.
     """
     return
@@ -129,7 +130,7 @@ def make_loader(kind, cfg, train=True):
         ds,
         batch_size=cfg["optim"]["batch_size"],
         shuffle=train,
-        num_workers=4,
+        num_workers=0, # Switch back to 4 after testing
         pin_memory=True,
     )
 
@@ -142,6 +143,11 @@ def main(cfg):
     # Data
     train_loader = make_loader("train", cfg, train=True)
     val_loader = make_loader("val", cfg, train=False)
+
+    # Debug: grab one batch to make sure loader works
+    first_batch = next(iter(train_loader))
+    print("DEBUG: first_batch image shape:", first_batch["image"].shape)
+    print("DEBUG: first_batch label shape:", first_batch["label"].shape)
 
     # Model
     model = build_model(num_classes=cfg["model"]["num_classes"], dropout=cfg["model"].get("dropout", 0.0))

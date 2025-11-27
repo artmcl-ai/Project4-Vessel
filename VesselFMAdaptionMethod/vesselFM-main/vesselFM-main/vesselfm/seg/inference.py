@@ -31,31 +31,75 @@ logger = logging.getLogger(__name__)
 def build_model(num_classes=3, dropout=0.0):
     # Load inference config to get the same model definition with ckpt_path
     here = Path(__file__).resolve().parent
-    cfg_path = here / "configs" / "inference.yaml"   # -> vesselfm/seg/configs/inference.yaml
+    config_dir = here / "configs"  # -> vesselfm/seg/configs
 
-    cfg_inf = OmegaConf.load(cfg_path)
+    # Compose the full inference config
+    GlobalHydra.instance().clear()
+    with initialize_config_dir(config_dir=str(config_dir), job_name="av_model"):
+        cfg_inf = compose(config_name="inference")
 
-    # Override num_classes for the 3-class head
-    cfg_inf.model.num_classes = num_classes
-    if hasattr(cfg_inf.model, "dropout"):
-        cfg_inf.model.dropout = dropout
+    if "model" not in cfg_inf:
+        raise ValueError(
+            f"'model' key not found in composed config. Top-level keys: {list(cfg_inf.keys())}"
+        )
+
+    mcfg = cfg_inf.model
+
+    # Set number of output channels to num_classes
+    if "out_channels" in mcfg:
+        logger.info(f"[build_model] Setting model.out_channels -> {num_classes}")
+        mcfg.out_channels = num_classes
+    elif "num_classes" in mcfg:
+        logger.info(f"[build_model] Setting model.num_classes -> {num_classes}")
+        mcfg.num_classes = num_classes
+    else:
+        logger.warning(
+            "[build_model] Neither 'out_channels' nor 'num_classes' found in model config; "
+            "leaving output channels as-is."
+        )
+
+    # Dropout override
+    if "dropout" in mcfg:
+        logger.info(f"[build_model] Setting model.dropout -> {dropout}")
+        mcfg.dropout = dropout
+
+    # Instantiate MONAI DynUNet
+    model = hydra.utils.instantiate(cfg_inf.model)
 
     # Load pretrained VesselFM weights
     try:
         logger.info(f"[build_model] Loading pretrained weights from {cfg_inf.ckpt_path}.")
         ckpt = torch.load(Path(cfg_inf.ckpt_path), map_location="cpu", weights_only=True)
-    except Exception:
-        logger.info("[build_model] Loading pretrained weights from Hugging Face.")
-        hf_hub_download(repo_id="bwittmann/vesselFM", filename="meta.yaml")  # track downloads
+    except Exception as e:
+        logger.info(
+            f"[build_model] Could not load ckpt from cfg_inf.ckpt_path ({e}). "
+            "Falling back to Hugging Face vesselFM_base.pt."
+        )
+        hf_hub_download(repo_id="bwittmann/vesselFM", filename="meta.yaml")
         ckpt = torch.load(
             hf_hub_download(repo_id="bwittmann/vesselFM", filename="vesselFM_base.pt"),
             map_location="cpu",
             weights_only=True,
         )
 
-    # Instantiate the model and load weights
-    model = hydra.utils.instantiate(cfg_inf.model)
-    model.load_state_dict(ckpt, strict=False)
+    # Drop old head weights (1-channel) to avoid size mismatch
+    head_keys = [k for k in ckpt.keys() if k.startswith("output_block.")]
+    if head_keys:
+        logger.info(
+            f"[build_model] Removing {len(head_keys)} head params from checkpoint "
+            f"to accommodate new 3-class head: {head_keys}"
+        )
+        for k in head_keys:
+            ckpt.pop(k)
+
+    # Now load backbone weights (strict=False allows missing head params)
+    missing, unexpected = model.load_state_dict(ckpt, strict=False)
+    logger.info(
+        f"[build_model] Loaded pretrained VesselFM weights with "
+        f"{len(missing)} missing and {len(unexpected)} unexpected keys "
+        f"(expected when swapping to a 3-class head)."
+    )
+
     return model
 
 

@@ -173,17 +173,21 @@ class NiftiVolume(Dataset):
 
         sample = {"image": image, "label": label}
 
-        # Optional extra transform hook (currently typically identity)
         if self._transform is not None:
             sample = self._transform(sample)
             image = sample["image"]
             label = sample["label"]
 
+        # Ensure positive strides / contiguous arrays
+        image = np.ascontiguousarray(image)
+        label = np.ascontiguousarray(label)
+
         # Convert to tensors, channel-first for image
         img_tensor = torch.as_tensor(image[None, ...], dtype=torch.float32)  # (1, D, H, W)
-        lab_tensor = torch.as_tensor(label, dtype=torch.long)               # (D, H, W)
+        lab_tensor = torch.as_tensor(label, dtype=torch.long)                # (D, H, W)
 
         return {"image": img_tensor, "label": lab_tensor}
+
 
 
 def make_aug_transforms(cfg, train: bool = True):
