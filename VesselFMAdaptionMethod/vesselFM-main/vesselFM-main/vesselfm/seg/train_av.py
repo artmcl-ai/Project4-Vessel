@@ -1,18 +1,21 @@
-import os, csv, random, argparse, json
+import os, random, argparse, json, pathlib
 import numpy as np
-import torch, torch.nn as nn
+import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
 
 from .inference import build_model
 from .losses import CompositeLoss, SoftClDiceLoss
-
-# Dataset Utilities
 from .dataio import NiftiVolume, make_aug_transforms
 
+
 def set_seed(s):
-    random.seed(s); np.random.seed(s); torch.manual_seed(s); torch.cuda.manual_seed_all(s)
+    random.seed(s)
+    np.random.seed(s)
+    torch.manual_seed(s)
+    torch.cuda.manual_seed_all(s)
+
 
 def freeze_backbone(model):
     """
@@ -20,17 +23,19 @@ def freeze_backbone(model):
     supervision heads) as the backbone. Freeze all those params.
     """
     for name, p in model.named_parameters():
-        # Keep only the segmentation head trainable
         if "output_block" in name or "deep_supervision_heads" in name:
-            p.requires_grad = True
+            p.requires_grad = True   # keep head trainable
         else:
-            p.requires_grad = False
+            p.requires_grad = False  # freeze backbone
+
 
 def unfreeze_encoder_tail(model, n_stages=2):
     """
-    Stage 2 in train_av.py continues training the head with a lower LR.
+    To respect the 'no backbone retrain' constraint, we keep this as a no-op.
+    Stage 2 just continues training the head with a lower LR.
     """
     return
+
 
 def one_epoch(model, loader, loss_fn, opt, scaler, device, amp=True):
     model.train()
@@ -42,9 +47,11 @@ def one_epoch(model, loader, loss_fn, opt, scaler, device, amp=True):
             logits = model(img)  # (B,3,D,H,W)
             loss = loss_fn(logits, lab)
         scaler.scale(loss).backward()
-        scaler.step(opt); scaler.update()
+        scaler.step(opt)
+        scaler.update()
         running.append(loss.item())
     return float(np.mean(running))
+
 
 @torch.no_grad()
 def eval_epoch(model, loader, device, soft_cl=None):
@@ -69,12 +76,13 @@ def eval_epoch(model, loader, device, soft_cl=None):
         # Soft clDice on vessel union (A ∪ V)
         if soft_cl is not None:
             onehot = torch.zeros_like(probs).scatter_(1, lab.unsqueeze(1), 1.0)
-            cl_loss = soft_cl(probs, onehot)       # This returns 1 - clDice
+            cl_loss = soft_cl(probs, onehot)  # returns 1 - clDice
             cldices.append(1.0 - cl_loss.item())
 
     mean_dice = float(np.mean(dices)) if dices else 0.0
     mean_cldice = float(np.mean(cldices)) if cldices else 0.0
     return mean_dice, mean_cldice
+
 
 def make_items_from_dirs(image_dir, label_dir):
     image_dir = pathlib.Path(image_dir)
@@ -95,7 +103,7 @@ def make_loader(kind, cfg, train=True):
     else:
         items = make_items_from_dirs(cfg["data"]["val_images"], cfg["data"]["val_labels"])
 
-    ds = NiftiVolume(items, cfg)
+    ds = NiftiVolume(items, cfg, train=train)
     aug = make_aug_transforms(cfg, train=train)
     ds.set_transform(aug)
     return DataLoader(
@@ -106,17 +114,18 @@ def make_loader(kind, cfg, train=True):
         pin_memory=True,
     )
 
+
 def main(cfg):
     history = {"epoch": [], "stage": [], "train_loss": [], "val_dice": [], "val_clDice": []}
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(cfg["seed"])
+
     # Data
     train_loader = make_loader("train", cfg, train=True)
-    val_loader   = make_loader("val",   cfg, train=False)
-
+    val_loader = make_loader("val", cfg, train=False)
 
     # Model
-    model = build_model(num_classes=cfg["model"]["num_classes"], dropout=cfg["model"].get("dropout",0.0))
+    model = build_model(num_classes=cfg["model"]["num_classes"], dropout=cfg["model"].get("dropout", 0.0))
     model.to(device)
 
     # Loss
@@ -132,48 +141,76 @@ def main(cfg):
 
     # Stage 1: freeze backbone, train head and decoder
     freeze_backbone(model)
-    opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
-                            lr=cfg["optim"]["lr_stage1"], weight_decay=cfg["optim"]["weight_decay"])
-    scaler = torch.amp.GradScaler(enabled=cfg["optim"]["amp"])
+    opt = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=cfg["optim"]["lr_stage1"],
+        weight_decay=cfg["optim"]["weight_decay"],
+    )
+    scaler = GradScaler(enabled=cfg["optim"]["amp"])
 
     best = -1.0
     for epoch in range(cfg["optim"]["epochs_stage1"]):
         tr = one_epoch(model, train_loader, loss_fn, opt, scaler, device, amp=cfg["optim"]["amp"])
         va_dice, va_cldice = eval_epoch(model, val_loader, device, soft_cl=soft_cl_metric)
+
         history["epoch"].append(epoch + 1)
         history["stage"].append("S1")
         history["train_loss"].append(tr)
         history["val_dice"].append(va_dice)
         history["val_clDice"].append(va_cldice)
+
         if va_dice > best:
             best = va_dice
             torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_stage1.pt")
-        print(f"[S1][{epoch+1}/{cfg['optim']['epochs_stage1']}] "
-            f"loss={tr:.4f} valDice={va_dice:.4f} valClDice={va_cldice:.4f}")
 
-    # Stage 2: partial unfreeze
+        print(
+            f"[S1][{epoch+1}/{cfg['optim']['epochs_stage1']}] "
+            f"loss={tr:.4f} valDice={va_dice:.4f} valClDice={va_cldice:.4f}"
+        )
+
+    # Stage 2: continue training head with lower LR
     unfreeze_encoder_tail(model, n_stages=2)
-    opt = torch.optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()),
-                            lr=cfg["optim"]["lr_stage2"], weight_decay=cfg["optim"]["weight_decay"])
+    opt = torch.optim.AdamW(
+        filter(lambda p: p.requires_grad, model.parameters()),
+        lr=cfg["optim"]["lr_stage2"],
+        weight_decay=cfg["optim"]["weight_decay"],
+    )
+
     for epoch in range(cfg["optim"]["epochs_stage2"]):
+        tr = one_epoch(model, train_loader, loss_fn, opt, scaler, device, amp=cfg["optim"]["amp"])
+        va_dice, va_cldice = eval_epoch(model, val_loader, device, soft_cl=soft_cl_metric)
+
         history["epoch"].append(epoch + 1)
         history["stage"].append("S2")
         history["train_loss"].append(tr)
         history["val_dice"].append(va_dice)
         history["val_clDice"].append(va_cldice)
-        tr = one_epoch(...)
-        va_dice, va_cldice = eval_epoch(model, val_loader, device, soft_cl=soft_cl_metric)
+
         if va_dice > best:
             best = va_dice
             torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best.pt")
-        print(f"[S2][{epoch+1}/{cfg['optim']['epochs_stage2']}] "
-            f"loss={tr:.4f} valDice={va_dice:.4f} valClDice={va_cldice:.4f}")
+
+        print(
+            f"[S2][{epoch+1}/{cfg['optim']['epochs_stage2']}] "
+            f"loss={tr:.4f} valDice={va_dice:.4f} valClDice={va_cldice:.4f}"
+        )
+
+    try:
+        import pandas as pd
+
+        os.makedirs("checkpoints", exist_ok=True)
+        pd.DataFrame(history).to_csv(f"checkpoints/{cfg['experiment']}_training_curve.csv", index=False)
+    except Exception as e:
+        print("Could not save training curve CSV:", e)
+
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", type=str, default="configs/av_ct.yaml")
     args = ap.parse_args()
     with open(args.config) as f:
-        import yaml; cfg = yaml.safe_load(f)
+        import yaml
+
+        cfg = yaml.safe_load(f)
     os.makedirs("checkpoints", exist_ok=True)
     main(cfg)
