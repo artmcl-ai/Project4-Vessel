@@ -30,8 +30,8 @@ optim:
   lr_stage1: 3.0e-4
   lr_stage2: 3.0e-5
   weight_decay: 1.0e-5
-  epochs_stage1: 30
-  epochs_stage2: 30
+  epochs_stage1: 1
+  epochs_stage2: 0
   batch_size: 2
   amp: true
 
