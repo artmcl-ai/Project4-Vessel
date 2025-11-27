@@ -4,12 +4,12 @@ defaults:
   - _self_
 
 # i/o
-image_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/imagesTs #TODO
+image_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/imagesTr #TODO
 image_file_ending: nii.gz
 output_folder: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/av_newmasks # TODO
 file_app: ""
 
-mask_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/labelsTs
+mask_path: null
 round_to: 2
 
 # model & ckpt
