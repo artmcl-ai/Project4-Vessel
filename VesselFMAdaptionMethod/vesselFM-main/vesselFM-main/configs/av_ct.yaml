@@ -3,8 +3,10 @@ experiment: av_ct
 seed: 42
 
 data:
-  train_csv: data/train.csv        # columns: image,label
-  val_csv:   data/val.csv
+  train_images: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/imagesTr
+  train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/labelsTr
+  val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/imagesTs
+  val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/labelsTs
   spacing: [1.0, 1.0, 1.0]
   clip_hu: [-1000, 600]
   zscore: true
@@ -15,7 +17,6 @@ data:
 
 model:
   num_classes: 3
-  # if the repo exposes a head/out_channels param, this will be read there too
   dropout: 0.1
 
 loss:

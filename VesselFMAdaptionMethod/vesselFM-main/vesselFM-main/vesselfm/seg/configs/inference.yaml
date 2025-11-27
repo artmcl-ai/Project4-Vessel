@@ -4,17 +4,17 @@ defaults:
   - _self_
 
 # i/o
-image_path: /path/to/image_folder #TODO
+image_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/imagesTs #TODO
 image_file_ending: nii.gz
-output_folder: /path/to/output_folder # TODO
+output_folder: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/av_newmasks # TODO
 file_app: ""
 
-mask_path: null
+mask_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/labelsTs
 round_to: 2
 
 # model & ckpt
 device: cuda:0
-ckpt_path: /path/to/ckpt.pt
+ckpt_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/checkpoints/av_ct_best.pt
 
 # sliding window inferer
 batch_size: 16
@@ -31,9 +31,9 @@ seed: 404
 transforms_config:
   - EnsureChannelFirst:
       channel_dim: "no_channel"
-  - ScaleIntensityRangePercentiles:
-      lower: 1
-      upper: 99
+  - ScaleIntensityRange:
+      a_min: -1000
+      a_max: 600
       b_min: 0
       b_max: 1
       clip: true
