@@ -6,7 +6,7 @@ from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
 
 from .inference import build_model
-from ..avseg.losses import CompositeLoss, SoftClDiceLoss
+from .losses import CompositeLoss, SoftClDiceLoss
 
 # Dataset Utilities
 from .dataio import NiftiVolume, make_aug_transforms
