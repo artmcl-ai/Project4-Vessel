@@ -88,55 +88,43 @@ class NiftiVolume(Dataset):
 
     def _sample_patch(self, image, label):
         """
-        Randomly sample a 3D patch of size patch_size.
-        For training, we try to enforce a minimum vessel foreground fraction.
-        For validation, we just take a random patch (no fg constraint).
+        Randomly sample a 3D patch. If min_fg_fraction > 0, try up to max_tries
+        to find a patch with enough vessel foreground; otherwise, fall back to
+        the last sampled patch.
         """
-        dz, dy, dx = self.patch_size
-        zdim, ydim, xdim = image.shape
+        D, H, W = image.shape
+        pD, pH, pW = self.cfg["data"]["patch_size"]
+        min_fg = self.cfg["data"].get("min_fg_fraction", 0.0)
+        max_tries = 32  # safety cap
 
-        # Pad if volume is smaller than patch
-        pad_z = max(0, dz - zdim)
-        pad_y = max(0, dy - ydim)
-        pad_x = max(0, dx - xdim)
-        if pad_z or pad_y or pad_x:
-            image = np.pad(
-                image,
-                ((0, pad_z), (0, pad_y), (0, pad_x)),
-                mode="constant",
-            )
-            label = np.pad(
-                label,
-                ((0, pad_z), (0, pad_y), (0, pad_x)),
-                mode="constant",
-            )
-            zdim, ydim, xdim = image.shape
+        # Ensure patch size does not exceed image size
+        pD = min(pD, D)
+        pH = min(pH, H)
+        pW = min(pW, W)
 
-        # Try several times to get a vessel-rich patch (for training)
-        for _ in range(10):
-            z0 = np.random.randint(0, zdim - dz + 1)
-            y0 = np.random.randint(0, ydim - dy + 1)
-            x0 = np.random.randint(0, xdim - dx + 1)
+        fallback_img = None
+        fallback_lab = None
 
-            patch_lab = label[z0:z0 + dz, y0:y0 + dy, x0:x0 + dx]
+        for attempt in range(max_tries):
+            z = np.random.randint(0, max(1, D - pD + 1))
+            y = np.random.randint(0, max(1, H - pH + 1))
+            x = np.random.randint(0, max(1, W - pW + 1))
 
-            if not self.train:
-                patch_img = image[z0:z0 + dz, y0:y0 + dy, x0:x0 + dx]
-                return patch_img, patch_lab
+            img_patch = image[z:z+pD, y:y+pH, x:x+pW]
+            lab_patch = label[z:z+pD, y:y+pH, x:x+pW]
 
-            if self.min_fg_fraction <= 0:
-                patch_img = image[z0:z0 + dz, y0:y0 + dy, x0:x0 + dx]
-                return patch_img, patch_lab
+            if fallback_img is None:
+                fallback_img, fallback_lab = img_patch, lab_patch
 
-            fg_fraction = (patch_lab > 0).mean()
-            if fg_fraction >= self.min_fg_fraction:
-                patch_img = image[z0:z0 + dz, y0:y0 + dy, x0:x0 + dx]
-                return patch_img, patch_lab
+            if min_fg <= 0.0:
+                return img_patch, lab_patch
 
-        # Fallback: last sampled patch, even if mostly background
-        patch_img = image[z0:z0 + dz, y0:y0 + dy, x0:x0 + dx]
-        patch_lab = label[z0:z0 + dz, y0:y0 + dy, x0:x0 + dx]
-        return patch_img, patch_lab
+            fg_fraction = (lab_patch > 0).mean()
+            if fg_fraction >= min_fg:
+                return img_patch, lab_patch
+
+        # If we didn't find a "good" patch after max_tries, just return fallback
+        return fallback_img, fallback_lab
 
     def _augment(self, image, label):
         """Very lightweight spatial augmentation (flips)."""
