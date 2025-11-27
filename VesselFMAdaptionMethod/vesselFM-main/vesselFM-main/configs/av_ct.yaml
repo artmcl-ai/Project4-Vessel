@@ -12,7 +12,7 @@ data:
   zscore: true
   patch_size: [96, 96, 96]
   samples_per_volume: 4
-  min_fg_fraction: 0.02            # hard-example mining
+  min_fg_fraction: 0.0            # hard-example mining, set back to default of 0.02 after testing
   labels: {background: 0, artery: 1, vein: 2}
 
 model:
