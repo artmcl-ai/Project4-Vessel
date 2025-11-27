@@ -76,25 +76,44 @@ def eval_epoch(model, loader, device, soft_cl=None):
     mean_cldice = float(np.mean(cldices)) if cldices else 0.0
     return mean_dice, mean_cldice
 
+def make_items_from_dirs(image_dir, label_dir):
+    image_dir = pathlib.Path(image_dir)
+    label_dir = pathlib.Path(label_dir)
+    items = []
+    for img_path in sorted(image_dir.glob("*.nii*")):
+        lab_path = label_dir / img_path.name
+        if not lab_path.exists():
+            print(f"WARNING: no label for {img_path.name}, skipping")
+            continue
+        items.append((str(img_path), str(lab_path)))
+    return items
 
-def make_loader(csv_path, cfg, train=True):
-    items=[]
-    with open(csv_path) as f:
-        for row in csv.DictReader(f):
-            items.append((row["image"], row["label"]))
+
+def make_loader(kind, cfg, train=True):
+    if kind == "train":
+        items = make_items_from_dirs(cfg["data"]["train_images"], cfg["data"]["train_labels"])
+    else:
+        items = make_items_from_dirs(cfg["data"]["val_images"], cfg["data"]["val_labels"])
+
     ds = NiftiVolume(items, cfg)
     aug = make_aug_transforms(cfg, train=train)
     ds.set_transform(aug)
-    return DataLoader(ds, batch_size=cfg["optim"]["batch_size"], shuffle=train,
-                      num_workers=4, pin_memory=True)
+    return DataLoader(
+        ds,
+        batch_size=cfg["optim"]["batch_size"],
+        shuffle=train,
+        num_workers=4,
+        pin_memory=True,
+    )
 
 def main(cfg):
     history = {"epoch": [], "stage": [], "train_loss": [], "val_dice": [], "val_clDice": []}
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(cfg["seed"])
     # Data
-    train_loader = make_loader(cfg["data"]["train_csv"], cfg, train=True)
-    val_loader   = make_loader(cfg["data"]["val_csv"],   cfg, train=False)
+    train_loader = make_loader("train", cfg, train=True)
+    val_loader   = make_loader("val",   cfg, train=False)
+
 
     # Model
     model = build_model(num_classes=cfg["model"]["num_classes"], dropout=cfg["model"].get("dropout",0.0))
