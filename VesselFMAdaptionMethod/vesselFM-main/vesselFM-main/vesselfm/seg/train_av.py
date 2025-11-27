@@ -41,17 +41,24 @@ def unfreeze_encoder_tail(model, n_stages=2):
 def one_epoch(model, loader, loss_fn, opt, scaler, device, amp=True):
     model.train()
     running = []
-    for batch in loader:
+    for i, batch in enumerate(loader, start=1):
         img, lab = batch["image"].to(device), batch["label"].to(device).long()
         opt.zero_grad(set_to_none=True)
         with autocast(enabled=amp):
             logits = model(img)  # (B,3,D,H,W)
             loss = loss_fn(logits, lab)
+
         scaler.scale(loss).backward()
         scaler.step(opt)
         scaler.update()
         running.append(loss.item())
+
+        # Progress print every 50 batches
+        if i % 50 == 0 or i == 1:
+            print(f"  [train] batch {i}/{len(loader)}  loss={loss.item():.4f}")
+
     return float(np.mean(running))
+
 
 
 @torch.no_grad()
