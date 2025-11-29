@@ -12,7 +12,7 @@ data:
   clip_hu: null # [-1000, 600]
   zscore: false # True if not preprocessing
   patch_size: [96, 96, 96]
-  samples_per_volume: 4           # Was set to 4
+  samples_per_volume: 2           # Was set to 4
   min_fg_fraction: 0.02            # hard-example mining, set back to default of 0.02 after testing
   labels: {background: 0, artery: 1, vein: 2}
 
@@ -33,11 +33,11 @@ optim:
   weight_decay: 1.0e-5
   epochs_stage1: 100
   epochs_stage2: 100
-  batch_size: 2
+  batch_size: 1
   amp: true
 
 augment:
-  gamma: [0.7, 1.5] # Was [0.7, 1.5]
+  gamma: [0.8, 1.2] # Was [0.7, 1.5]
   noise_std: 0.01
   flip_prob: 0.5
   elastic_prob: 0.0 # Turn off while tuning
