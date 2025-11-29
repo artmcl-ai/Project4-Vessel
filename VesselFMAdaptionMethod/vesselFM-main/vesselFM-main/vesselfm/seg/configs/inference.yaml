@@ -4,21 +4,21 @@ defaults:
   - _self_
 
 # i/o
-image_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal #TODO
+image_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal_pre #TODO
 image_file_ending: nii.gz
 output_folder: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/av_newmasks # TODO
 file_app: ""
 
-mask_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal
+mask_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal_pre
 round_to: 2
 
 # model & ckpt
 device: cuda:0
-ckpt_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/checkpoints/av_ct_best.pt
+ckpt_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/av_ct_best.pt
 
 # sliding window inferer
-batch_size: 16
-patch_size: [96, 96, 96]
+batch_size: 1
+patch_size: [128, 128, 128]
 overlap: 0.5
 mode: "constant"
 sigma_scale: 0.125
@@ -31,18 +31,12 @@ seed: 404
 transforms_config:
   - EnsureChannelFirst:
       channel_dim: "no_channel"
-  - ScaleIntensityRange:
-      a_min: -1000
-      a_max: 600
-      b_min: 0
-      b_max: 1
-      clip: true
   - ToTensor:
       device: null
 
 # test time augmentation
 tta:
-  scales: [1] #[0.5, 1, 1.5]
+  scales: [1.0] #[0.5, 1, 1.5]
   invert: false
   invert_mean_thresh: 0.5
   equalize_hist: false
@@ -58,3 +52,7 @@ post:
 merging:
   threshold: 0.5
   max: false
+
+# --- override model for A/V/BG ---
+model:
+  out_channels: 3

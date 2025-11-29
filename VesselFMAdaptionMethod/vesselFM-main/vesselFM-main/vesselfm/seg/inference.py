@@ -120,15 +120,79 @@ def load_model(cfg, device):
     return model
 
 def get_paths(cfg):
-    image_paths = list(Path(cfg.image_path).iterdir())
-    if cfg.mask_path:
-        mask_paths = [Path(cfg.mask_path) / f"{p.name}" for p in image_paths]
-        assert all(
-            mask_path.exists() for mask_path in mask_paths
-        ), "All mask paths must exist mask name has to be the same as the image name."
-    else:
-        mask_paths = None
+    """
+    Collect image and mask paths.
+
+    Supports config layouts:
+      - cfg.image_dir / cfg.mask_dir
+      - cfg.data.image_dir / cfg.data.mask_dir
+
+    Supports filename conventions:
+      1) Same-name masks:
+           image_004.nii.gz -> image_004.nii.gz
+      2) image/label naming:
+           image_004.nii.gz -> label_004.nii.gz
+    """
+    import os
+    import glob
+
+    # --- 1. Read directories from config, but don't assume 'data' exists ---
+    # Try nested first, then fall back to top-level.
+    image_dir = OmegaConf.select(cfg, "data.image_dir")
+    if image_dir is None:
+        image_dir = OmegaConf.select(cfg, "image_dir")
+
+    mask_dir = OmegaConf.select(cfg, "data.mask_dir")
+    if mask_dir is None:
+        mask_dir = OmegaConf.select(cfg, "mask_dir")
+
+    if image_dir is None:
+        raise RuntimeError(
+            "image_dir not set in config (looked for 'image_dir' and 'data.image_dir')."
+        )
+
+    # --- 2. Collect images ---
+    # Use *.nii* so it works for .nii and .nii.gz
+    image_paths = sorted(glob.glob(os.path.join(image_dir, "*.nii*")))
+    if not image_paths:
+        raise RuntimeError(f"No images found in {image_dir}")
+
+    # If no mask_dir (pure inference), just return images
+    if mask_dir in (None, "", "null"):
+        return image_paths, None
+
+    # --- 3. Build mask paths with both naming schemes ---
+    mask_paths = []
+
+    for img_path in image_paths:
+        img_name = os.path.basename(img_path)          # e.g. "image_004.nii.gz"
+
+        # (a) First try: mask has EXACT same basename as image
+        same_name_mask = os.path.join(mask_dir, img_name)
+        if os.path.exists(same_name_mask):
+            mask_paths.append(same_name_mask)
+            continue
+
+        # (b) Second try: image_XXX.nii.gz -> label_XXX.nii.gz
+        alt_mask = None
+        if img_name.startswith("image_"):
+            suffix = img_name[len("image_"):]          # "004.nii.gz"
+            alt_mask = os.path.join(mask_dir, "label_" + suffix)
+            if os.path.exists(alt_mask):
+                mask_paths.append(alt_mask)
+                continue
+
+        # If we get here, no matching mask was found for this image
+        msg = (
+            f"Could not find a mask for image:\n  {img_path}\n"
+            f"Tried:\n  {same_name_mask}"
+        )
+        if alt_mask is not None:
+            msg += f"\n  {alt_mask}"
+        raise FileNotFoundError(msg)
+
     return image_paths, mask_paths
+
 
 def resample(image, factor=None, target_shape=None):
     if factor == 1:

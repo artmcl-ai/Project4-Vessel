@@ -35,10 +35,19 @@ def unfreeze_encoder_tail(model, n_stages=2):
     To respect the no backbone retrain constraint, keep this as a no-op.
     Stage 2 just continues training the head with a lower LR.
     """
-    if hasattr(model, "decoder"):
-        for p in model.decoder.parameters():
+    # keep head trainable
+    if hasattr(model, "output_block"):
+        for p in model.output_block.parameters():
             p.requires_grad = True
-    return
+    if hasattr(model, "deep_supervision_heads"):
+        for p in model.deep_supervision_heads.parameters():
+            p.requires_grad = True
+
+    # example for DynUNet: unfreeze last decoder level
+    if hasattr(model, "decoder"):
+        # decoder is typically a nn.ModuleList of stages
+        for p in model.decoder[-1].parameters():
+            p.requires_grad = True
 
 
 def one_epoch(model, loader, loss_fn, opt, scaler, device, amp=True):
