@@ -35,6 +35,9 @@ def unfreeze_encoder_tail(model, n_stages=2):
     To respect the no backbone retrain constraint, keep this as a no-op.
     Stage 2 just continues training the head with a lower LR.
     """
+    if hasattr(model, "decoder"):
+        for p in model.decoder.parameters():
+            p.requires_grad = True
     return
 
 

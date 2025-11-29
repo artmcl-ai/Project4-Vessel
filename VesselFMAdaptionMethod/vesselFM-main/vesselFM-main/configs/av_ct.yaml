@@ -13,7 +13,7 @@ data:
   zscore: false # True if not preprocessing
   patch_size: [96, 96, 96]
   samples_per_volume: 2           # Was set to 4
-  min_fg_fraction: 0.02            # hard-example mining, set back to default of 0.02 after testing
+  min_fg_fraction: 0.01            # hard-example mining, set back to default of 0.02 after testing
   labels: {background: 0, artery: 1, vein: 2}
 
 model:
@@ -31,8 +31,8 @@ optim:
   lr_stage1: 1.0e-3 # Was 3.0e-4
   lr_stage2: 1.0e-4 # Was 3.0e-5
   weight_decay: 1.0e-5
-  epochs_stage1: 100
-  epochs_stage2: 100
+  epochs_stage1: 40
+  epochs_stage2: 20
   batch_size: 1
   amp: true
 
