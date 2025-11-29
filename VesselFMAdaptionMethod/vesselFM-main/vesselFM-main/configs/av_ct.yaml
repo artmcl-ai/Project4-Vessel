@@ -3,13 +3,13 @@ experiment: av_ct
 seed: 42
 
 data:
-  train_images: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesTr
-  train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsTr
+  train_images: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesTr_pre
+  train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsTr_pre
   val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal
   val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal
-  spacing: [1.0, 1.0, 1.0]
-  clip_hu: [-1000, 600]
-  zscore: true
+  spacing: null # [1.0, 1.0, 1.0]
+  clip_hu: null # [-1000, 600]
+  zscore: false # True if not preprocessing
   patch_size: [96, 96, 96]
   samples_per_volume: 2           # Was set to 4
   min_fg_fraction: 0.02            # hard-example mining, set back to default of 0.02 after testing
