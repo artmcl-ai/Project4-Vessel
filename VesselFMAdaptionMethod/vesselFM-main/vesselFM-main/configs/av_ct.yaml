@@ -7,6 +7,7 @@ data:
   train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsTr_pre
   val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal
   val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal
+  preprocessed: true
   spacing: null # [1.0, 1.0, 1.0]
   clip_hu: null # [-1000, 600]
   zscore: false # True if not preprocessing
