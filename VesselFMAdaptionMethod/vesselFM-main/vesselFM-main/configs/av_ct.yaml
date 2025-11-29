@@ -12,7 +12,7 @@ data:
   clip_hu: null # [-1000, 600]
   zscore: false # True if not preprocessing
   patch_size: [96, 96, 96]
-  samples_per_volume: 2           # Was set to 4
+  samples_per_volume: 4           # Was set to 4
   min_fg_fraction: 0.02            # hard-example mining, set back to default of 0.02 after testing
   labels: {background: 0, artery: 1, vein: 2}
 
@@ -23,24 +23,24 @@ model:
 loss:
   dice_ce_weight: 1.0
   class_weights: [0.2, 0.4, 0.4]   # tweak per dataset imbalance
-  use_soft_cldice: true
-  soft_cldice_weight: 0.2
+  use_soft_cldice: false
+  soft_cldice_weight: 0.0 # Default was 0.2
   soft_cldice_iters: 8
 
 optim:
-  lr_stage1: 3.0e-4
-  lr_stage2: 3.0e-5
+  lr_stage1: 1.0e-3 # Was 3.0e-4
+  lr_stage2: 1.0e-4 # Was 3.0e-5
   weight_decay: 1.0e-5
-  epochs_stage1: 40
-  epochs_stage2: 30
-  batch_size: 1
+  epochs_stage1: 100
+  epochs_stage2: 100
+  batch_size: 2
   amp: true
 
 augment:
-  gamma: [0.7, 1.5]
+  gamma: [0.7, 1.5] # Was [0.7, 1.5]
   noise_std: 0.01
   flip_prob: 0.5
-  elastic_prob: 0.2
+  elastic_prob: 0.0 # Turn off while tuning
 
 inference:
   tta: false
