@@ -32,8 +32,19 @@ class NiftiVolume(Dataset):
         self.patch_size = tuple(data_cfg.get("patch_size", [96, 96, 96]))
         self.samples_per_volume = int(data_cfg.get("samples_per_volume", 4))
         self.min_fg_fraction = float(data_cfg.get("min_fg_fraction", 0.0))
-        self.clip_hu = data_cfg.get("clip_hu", None)   # e.g. [-1000, 600]
-        self.zscore = bool(data_cfg.get("zscore", False))
+
+        # Flag to indicate images are already preprocessed by preprocess_av.py
+        self.preprocessed = bool(data_cfg.get("preprocessed", False))
+
+        if self.preprocessed:
+            # Images are already resampled + HU-clipped + scaled to [0,1],
+            # Do NOT apply any further intensity preprocessing here.
+            self.clip_hu = None
+            self.zscore = False
+        else:
+            # Fallback: keep old online intensity preprocessing behavior
+            self.clip_hu = data_cfg.get("clip_hu", None)   # e.g. [-1000, 600]
+            self.zscore = bool(data_cfg.get("zscore", False))
 
         # For training, we define length as (#volumes * samples_per_volume)
         # so each epoch sees multiple patches per volume.
