@@ -23,6 +23,7 @@ from vesselfm.seg.utils.io import determine_reader_writer
 from vesselfm.seg.utils.evaluation import Evaluator, calculate_mean_metrics
 
 from omegaconf import OmegaConf
+from pathlib import Path
 
 
 warnings.filterwarnings("ignore")
@@ -125,7 +126,9 @@ def get_paths(cfg):
 
     Supports config layouts:
       - cfg.image_dir / cfg.mask_dir
+      - cfg.image_path / cfg.mask_path
       - cfg.data.image_dir / cfg.data.mask_dir
+      - cfg.data.image_path / cfg.data.mask_path
 
     Supports filename conventions:
       1) Same-name masks:
@@ -134,42 +137,57 @@ def get_paths(cfg):
            image_004.nii.gz -> label_004.nii.gz
     """
     import os
-    import glob
 
-    # --- 1. Read directories from config, but don't assume 'data' exists ---
-    # Try nested first, then fall back to top-level.
-    image_dir = OmegaConf.select(cfg, "data.image_dir")
-    if image_dir is None:
-        image_dir = OmegaConf.select(cfg, "image_dir")
+    # --- 1. Read directories from config with fallbacks ---
+    image_dir_str = (
+        OmegaConf.select(cfg, "data.image_dir")
+        or OmegaConf.select(cfg, "image_dir")
+        or OmegaConf.select(cfg, "data.image_path")
+        or OmegaConf.select(cfg, "image_path")
+    )
 
-    mask_dir = OmegaConf.select(cfg, "data.mask_dir")
-    if mask_dir is None:
-        mask_dir = OmegaConf.select(cfg, "mask_dir")
+    mask_dir_str = (
+        OmegaConf.select(cfg, "data.mask_dir")
+        or OmegaConf.select(cfg, "mask_dir")
+        or OmegaConf.select(cfg, "data.mask_path")
+        or OmegaConf.select(cfg, "mask_path")
+    )
 
-    if image_dir is None:
+    if image_dir_str is None:
         raise RuntimeError(
-            "image_dir not set in config (looked for 'image_dir' and 'data.image_dir')."
+            "image directory not set in config "
+            "(looked for 'image_dir', 'data.image_dir', "
+            "'image_path', and 'data.image_path')."
         )
 
-    # --- 2. Collect images ---
+    image_dir = Path(image_dir_str)
+
+    # Normalize mask_dir: either a Path or None
+    if mask_dir_str is None or mask_dir_str in ("", "null"):
+        mask_dir = None
+    else:
+        mask_dir = Path(mask_dir_str)
+
+    # --- 2. Collect images as Path objects ---
     # Use *.nii* so it works for .nii and .nii.gz
-    image_paths = sorted(glob.glob(os.path.join(image_dir, "*.nii*")))
+    image_paths = sorted(image_dir.glob("*.nii*"))
     if not image_paths:
         raise RuntimeError(f"No images found in {image_dir}")
 
     # If no mask_dir (pure inference), just return images
-    if mask_dir in (None, "", "null"):
+    if mask_dir is None:
         return image_paths, None
 
-    # --- 3. Build mask paths with both naming schemes ---
+    # --- 3. Build mask paths with both naming schemes (also as Path objects) ---
     mask_paths = []
 
     for img_path in image_paths:
-        img_name = os.path.basename(img_path)          # e.g. "image_004.nii.gz"
+        # img_path is a Path
+        img_name = img_path.name  # e.g. "image_004.nii.gz"
 
         # (a) First try: mask has EXACT same basename as image
-        same_name_mask = os.path.join(mask_dir, img_name)
-        if os.path.exists(same_name_mask):
+        same_name_mask = mask_dir / img_name
+        if same_name_mask.exists():
             mask_paths.append(same_name_mask)
             continue
 
@@ -177,8 +195,8 @@ def get_paths(cfg):
         alt_mask = None
         if img_name.startswith("image_"):
             suffix = img_name[len("image_"):]          # "004.nii.gz"
-            alt_mask = os.path.join(mask_dir, "label_" + suffix)
-            if os.path.exists(alt_mask):
+            alt_mask = mask_dir / f"label_{suffix}"
+            if alt_mask.exists():
                 mask_paths.append(alt_mask)
                 continue
 
@@ -192,6 +210,7 @@ def get_paths(cfg):
         raise FileNotFoundError(msg)
 
     return image_paths, mask_paths
+
 
 
 def resample(image, factor=None, target_shape=None):
