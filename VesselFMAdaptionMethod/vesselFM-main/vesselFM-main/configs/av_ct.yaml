@@ -12,8 +12,8 @@ data:
   clip_hu: null # [-1000, 600]
   zscore: false # True if not preprocessing
   patch_size: [96, 96, 96]
-  samples_per_volume: 2           # Was set to 4
-  min_fg_fraction: 0.01            # hard-example mining, set back to default of 0.02 after testing
+  samples_per_volume: 4           # Was set to 4
+  min_fg_fraction: 0.03            # hard-example mining, set back to default of 0.02 after testing
   labels: {background: 0, artery: 1, vein: 2}
 
 model:
