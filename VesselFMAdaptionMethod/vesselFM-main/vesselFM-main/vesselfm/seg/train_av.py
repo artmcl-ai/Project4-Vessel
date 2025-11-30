@@ -169,18 +169,34 @@ def main(cfg):
     print("DEBUG: first_batch label shape:", first_batch["label"].shape)
 
     # Model
-    model = build_model(num_classes=cfg["model"]["num_classes"], dropout=cfg["model"].get("dropout", 0.0))
+    model = build_model(
+        num_classes=cfg["model"]["num_classes"],
+        dropout=cfg["model"].get("dropout", 0.0),
+    )
 
-    # Explicitly load VesselFM pretraining if provided
+    # ---- Load VesselFM backbone weights, but ignore mismatched head ----
     pre_ckpt = cfg["model"].get("pretrain_ckpt", None)
     if pre_ckpt:
         print(f"Loading pre-trained VesselFM weights from {pre_ckpt}")
         ckpt = torch.load(pre_ckpt, map_location="cpu")
         state = ckpt.get("state_dict", ckpt)
-        missing, unexpected = model.load_state_dict(state, strict=False)
-        print(f"  -> loaded with {len(missing)} missing and {len(unexpected)} unexpected keys")
+
+        model_state = model.state_dict()
+        filtered_state = {}
+
+        for k, v in state.items():
+            if k in model_state and v.shape == model_state[k].shape:
+                filtered_state[k] = v
+            else:
+                # This will include the 1-channel output_block head params
+                print(f"Skipping {k}: ckpt {tuple(v.shape)} vs model {tuple(model_state.get(k, torch.empty(0)).shape)}")
+
+        # Now load only compatible weights
+        missing, unexpected = model.load_state_dict(filtered_state, strict=False)
+        print(f"Loaded pre-trained backbone with {len(missing)} missing and {len(unexpected)} unexpected keys")
 
     model.to(device)
+
 
     # Loss
     loss_fn = CompositeLoss(
