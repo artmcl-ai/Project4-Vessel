@@ -26,7 +26,7 @@ loss:
   class_weights: [0.2, 0.4, 0.4]   # tweak per dataset imbalance
   use_soft_cldice: true
   soft_cldice_weight: 0.2 # Default was 0.2
-  soft_cldice_iters: 8
+  soft_cldice_iters: 3
 
 optim:
   lr_stage1: 1.0e-3 # Was 3.0e-4
