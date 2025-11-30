@@ -170,6 +170,16 @@ def main(cfg):
 
     # Model
     model = build_model(num_classes=cfg["model"]["num_classes"], dropout=cfg["model"].get("dropout", 0.0))
+
+    # Explicitly load VesselFM pretraining if provided
+    pre_ckpt = cfg["model"].get("pretrain_ckpt", None)
+    if pre_ckpt:
+        print(f"Loading pre-trained VesselFM weights from {pre_ckpt}")
+        ckpt = torch.load(pre_ckpt, map_location="cpu")
+        state = ckpt.get("state_dict", ckpt)
+        missing, unexpected = model.load_state_dict(state, strict=False)
+        print(f"  -> loaded with {len(missing)} missing and {len(unexpected)} unexpected keys")
+
     model.to(device)
 
     # Loss

@@ -19,11 +19,12 @@ data:
 model:
   num_classes: 3
   dropout: 0.1
+  pretrain_ckpt: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/vesselFM_base.pt
 
 loss:
   dice_ce_weight: 1.0
   class_weights: [0.2, 0.4, 0.4]   # tweak per dataset imbalance
-  use_soft_cldice: false
+  use_soft_cldice: true
   soft_cldice_weight: 0.0 # Default was 0.2
   soft_cldice_iters: 8
 

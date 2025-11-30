@@ -168,14 +168,35 @@ class Evaluator:
 def read_nifti(path: str):
     return sitk.GetArrayFromImage(sitk.ReadImage(path))
 
-def calculate_mean_metrics(results, round_to=2):
-    mean = {}
-    for k in results[0].keys():
-        numbers = [r[k] for r in results]
-        numbers = [n for n in numbers if np.isnan(n) == False]
-        mean[k] = np.mean(numbers)
+def calculate_mean_metrics(results):
+    """
+    Compute mean over metrics.
 
-        if "dice" in k:
-            mean[k] = mean[k] * 100
-        mean[k] = np.round(mean[k], round_to)
-    return mean
+    Accepts either:
+      - dict: {case_id -> {metric_name -> value}}
+      - list/tuple: [ {metric_name -> value}, ... ]
+    Returns:
+      dict: {metric_name -> mean_value}
+    """
+    import numpy as np
+
+    # Handle dict input: {case_id: metrics_dict}
+    if isinstance(results, dict):
+        if not results:
+            return {}
+        results_list = list(results.values())
+    else:
+        # Assume it's an iterable of metrics dicts
+        results_list = list(results)
+        if not results_list:
+            return {}
+
+    mean_metrics = {}
+    # Use keys from first case’s metrics
+    for k in results_list[0].keys():
+        vals = [float(r[k]) for r in results_list if k in r]
+        if vals:
+            mean_metrics[k] = float(np.mean(vals))
+
+    return mean_metrics
+
