@@ -12,6 +12,7 @@ from hydra.core.global_hydra import GlobalHydra
 
 import numpy as np
 import json
+from .cldice_utils import hard_cldice
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download
 from monai.inferers import SlidingWindowInfererAdapt
@@ -329,14 +330,32 @@ def main(cfg):
 
             # Metrics (if GT masks available)
             if mask_paths is not None and mask is not None:
-                # Union vessel probability = 1 - P(background)
-                union_prob = 1.0 - probs[0]  # probs[0] is class 0 = background
-                metrics = Evaluator().estimate_metrics(
-                    union_prob, mask, threshold=cfg.merging.threshold
-                )
-                logger.info(f"Dice of {image_path.name.split('.')[0]}: {metrics['dice'].item()}")
-                logger.info(f"clDice of {image_path.name.split('.')[0]}: {metrics['cldice'].item()}")
-                metrics_dict[image_path.name.split('.')[0]] = metrics
+                # ----------------------------------------------------------
+                # label: (D, H, W) with {0:bg, 1:artery, 2:vein}
+                # mask:  torch.bool, same spatial shape, True = vessel (A∪V)
+                # ----------------------------------------------------------
+                # Predicted union-of-vessels (A ∪ V)
+                union_pred = label > 0                       # numpy bool, (D,H,W)
+                # Ground-truth union-of-vessels
+                union_gt = mask.cpu().numpy().astype(bool)   # (D,H,W)
+
+                # Volumetric Dice on vessel union
+                inter = np.logical_and(union_pred, union_gt).sum()
+                denom = union_pred.sum() + union_gt.sum()
+                dice = 2.0 * inter / (denom + 1e-5) if denom > 0 else 0.0
+
+                # Hard clDice on vessel union (same metric as in train_av.py)
+                cldice = hard_cldice(union_pred.astype(bool), union_gt)
+
+                case_name = image_path.name.split('.')[0]
+                logger.info(f"Dice of {case_name}: {dice:.4f}")
+                logger.info(f"clDice of {case_name}: {cldice:.4f}")
+
+                # Store metrics in a format compatible with calculate_mean_metrics
+                metrics_dict[case_name] = {
+                    "dice": torch.tensor(dice),
+                    "cldice": torch.tensor(cldice),
+                }
 
     # Summarize over all images
     if mask_paths is not None and len(metrics_dict) > 0:

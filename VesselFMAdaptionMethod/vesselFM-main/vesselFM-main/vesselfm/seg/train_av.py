@@ -6,8 +6,9 @@ from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
 
 from .inference import build_model
-from .losses import CompositeLoss, SoftClDiceLoss
+from .losses import CompositeLoss
 from .dataio import NiftiVolume, make_aug_transforms
+from .cldice_utils import SoftCLDiceLoss, hard_cldice
 
 
 def set_seed(s):
@@ -50,57 +51,75 @@ def unfreeze_encoder_tail(model, n_stages=2):
             p.requires_grad = True
 
 
-def one_epoch(model, loader, loss_fn, opt, scaler, device, amp=True):
+def one_epoch(model, loader, loss_fn, opt, scaler, device,
+              amp=True, cldice_loss_fn=None, cldice_weight: float = 0.0):
     model.train()
     running = []
     for i, batch in enumerate(loader, start=1):
         img, lab = batch["image"].to(device), batch["label"].to(device).long()
         opt.zero_grad(set_to_none=True)
+
         with autocast(enabled=amp):
             logits = model(img)  # (B,3,D,H,W)
-            loss = loss_fn(logits, lab)
+            base_loss = loss_fn(logits, lab)
+            loss = base_loss
+
+            # --- add soft-clDice on union-of-vessels (A ∪ V) if enabled ---
+            if cldice_loss_fn is not None and cldice_weight > 0.0:
+                probs = F.softmax(logits, dim=1)  # (B,3,...)
+
+                # ground truth vessel union: artery or vein -> 1, background -> 0
+                vessel_lab = (lab > 0).long()  # (B,D,H,W)
+                vessel_gt = vessel_lab.unsqueeze(1).float()  # (B,1,D,H,W)
+
+                # union of artery+vein probabilities
+                vessel_probs = probs[:, 1:3].sum(dim=1, keepdim=True)  # (B,1,D,H,W)
+                vessel_probs = vessel_probs.clamp(0.0, 1.0)
+
+                cl_loss = cldice_loss_fn(vessel_gt, vessel_probs)
+                loss = loss + cldice_weight * cl_loss
 
         scaler.scale(loss).backward()
         scaler.step(opt)
         scaler.update()
         running.append(loss.item())
 
-        # Progress print every 50 batches
         if i % 50 == 0 or i == 1:
             print(f"  [train] batch {i}/{len(loader)}  loss={loss.item():.4f}")
 
     return float(np.mean(running))
 
-
-
 @torch.no_grad()
-def eval_epoch(model, loader, device, soft_cl=None):
+def eval_epoch(model, loader, device, cldice_metric=None):
     model.eval()
-    dices = []
-    cldices = []
+    dice_scores = []
+    cldice_scores = []
+
     for batch in loader:
         img, lab = batch["image"].to(device), batch["label"].to(device).long()
         logits = model(img)
         probs = F.softmax(logits, dim=1)
-        pred = probs.argmax(1)
+        pred = probs.argmax(1)  # (B,D,H,W)
 
-        # Dice per class (excluding background)
-        eps = 1e-5
-        ds = []
-        for c in [1, 2]:
-            inter = ((pred == c) & (lab == c)).sum().float()
-            denom = (pred == c).sum().float() + (lab == c).sum().float()
-            ds.append((2 * inter + eps) / (denom + eps))
-        dices.append(torch.stack(ds).mean().item())
+        B = pred.shape[0]
+        for b in range(B):
+            # union-of-vessels (A ∪ V) vs background
+            p = (pred[b] > 0)
+            g = (lab[b] > 0)
 
-        # Soft clDice on vessel union (A ∪ V)
-        if soft_cl is not None:
-            onehot = torch.zeros_like(probs).scatter_(1, lab.unsqueeze(1), 1.0)
-            cl_loss = soft_cl(probs, onehot)  # returns 1 - clDice
-            cldices.append(1.0 - cl_loss.item())
+            inter = (p & g).sum().float()
+            denom = p.sum().float() + g.sum().float()
+            dice = (2.0 * inter) / (denom + 1e-5)
+            dice_scores.append(dice.item())
 
-    mean_dice = float(np.mean(dices)) if dices else 0.0
-    mean_cldice = float(np.mean(cldices)) if cldices else 0.0
+            if cldice_metric is not None:
+                p_np = p.detach().cpu().numpy().astype(bool)
+                g_np = g.detach().cpu().numpy().astype(bool)
+                cld = cldice_metric(p_np, g_np)
+                cldice_scores.append(cld)
+
+    mean_dice = float(np.mean(dice_scores)) if dice_scores else 0.0
+    mean_cldice = float(np.mean(cldice_scores)) if cldice_scores else 0.0
     return mean_dice, mean_cldice
 
 
@@ -155,7 +174,14 @@ def make_loader(kind, cfg, train=True):
 
 
 def main(cfg):
-    history = {"epoch": [], "stage": [], "train_loss": [], "val_dice": [], "val_clDice": []}
+    history = {
+        "epoch": [],
+        "stage": [],
+        "train_loss": [],
+        "val_dice": [],      # Dice on vessel union (A∪V vs BG)
+        "val_clDice": [],    # hard clDice on vessel union (A∪V vs BG)
+    }
+    
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(cfg["seed"])
 
@@ -198,16 +224,21 @@ def main(cfg):
     model.to(device)
 
 
-    # Loss
+    # Loss (Dice+CE etc.)
     loss_fn = CompositeLoss(
         num_classes=cfg["model"]["num_classes"],
         class_weights=cfg["loss"]["class_weights"],
-        soft_cldice_weight=cfg["loss"]["soft_cldice_weight"] if cfg["loss"]["use_soft_cldice"] else 0.0,
+        soft_cldice_weight=0.0,  # we now handle clDice explicitly below
         soft_cldice_iters=cfg["loss"]["soft_cldice_iters"],
     ).to(device)
 
-    # clDice metric (union vessel)
-    soft_cl_metric = SoftClDiceLoss(iters=cfg["loss"]["soft_cldice_iters"]).to(device)
+    # Optional clDice component on union-of-vessels (A ∪ V vs BG)
+    cldice_weight = cfg["loss"]["soft_cldice_weight"] if cfg["loss"]["use_soft_cldice"] else 0.0
+    cldice_loss_fn = None
+    if cldice_weight > 0:
+        cldice_loss_fn = SoftCLDiceLoss(
+            iter_=cfg["loss"]["soft_cldice_iters"], smooth=1.0
+        ).to(device)
 
     # Stage 1: freeze backbone, train head and decoder
     freeze_backbone(model)
@@ -220,8 +251,13 @@ def main(cfg):
 
     best = -1.0
     for epoch in range(cfg["optim"]["epochs_stage1"]):
-        tr = one_epoch(model, train_loader, loss_fn, opt, scaler, device, amp=cfg["optim"]["amp"])
-        va_dice, va_cldice = eval_epoch(model, val_loader, device, soft_cl=soft_cl_metric)
+        tr = one_epoch(
+            model, train_loader, loss_fn, opt, scaler, device,
+            amp=cfg["optim"]["amp"],
+            cldice_loss_fn=cldice_loss_fn,
+            cldice_weight=cldice_weight,
+        )
+        va_dice, va_cldice = eval_epoch(model, val_loader, device, cldice_metric=hard_cldice)
 
         history["epoch"].append(epoch + 1)
         history["stage"].append("S1")
@@ -235,7 +271,7 @@ def main(cfg):
 
         print(
             f"[S1][{epoch+1}/{cfg['optim']['epochs_stage1']}] "
-            f"loss={tr:.4f} valDice={va_dice:.4f} valClDice={va_cldice:.4f}"
+            f"loss={tr:.4f} valDice(A∪V)={va_dice:.4f} valClDice(A∪V)={va_cldice:.4f}"
         )
 
     # Stage 2: continue training head with lower LR
@@ -247,8 +283,13 @@ def main(cfg):
     )
 
     for epoch in range(cfg["optim"]["epochs_stage2"]):
-        tr = one_epoch(model, train_loader, loss_fn, opt, scaler, device, amp=cfg["optim"]["amp"])
-        va_dice, va_cldice = eval_epoch(model, val_loader, device, soft_cl=soft_cl_metric)
+        tr = one_epoch(
+            model, train_loader, loss_fn, opt, scaler, device,
+            amp=cfg["optim"]["amp"],
+            cldice_loss_fn=cldice_loss_fn,
+            cldice_weight=cldice_weight,
+        )
+        va_dice, va_cldice = eval_epoch(model, val_loader, device, cldice_metric=hard_cldice)
 
         history["epoch"].append(epoch + 1)
         history["stage"].append("S2")
@@ -258,11 +299,11 @@ def main(cfg):
 
         if va_dice > best:
             best = va_dice
-            torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best.pt")
+            torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_stage2.pt")
 
         print(
-            f"[S2][{epoch+1}/{cfg['optim']['epochs_stage2']}] "
-            f"loss={tr:.4f} valDice={va_dice:.4f} valClDice={va_cldice:.4f}"
+            f"[S1][{epoch+1}/{cfg['optim']['epochs_stage1']}] "
+            f"loss={tr:.4f} valDice(A∪V)={va_dice:.4f} valClDice(A∪V)={va_cldice:.4f}"
         )
 
     try:
