@@ -4,11 +4,13 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
+from monai.inferers import sliding_window_inference
 
 from .inference import build_model
 from .losses import CompositeLoss
-from .dataio import NiftiVolume, make_aug_transforms
+from .dataio import make_aug_transforms
 from .cldice_utils import SoftCLDiceLoss, hard_cldice
+from torch.utils.data import Dataset
 
 
 def set_seed(s):
@@ -16,6 +18,51 @@ def set_seed(s):
     np.random.seed(s)
     torch.manual_seed(s)
     torch.cuda.manual_seed_all(s)
+
+
+def random_multi_crop_3d(img, lab, roi_size, num_samples):
+    """
+    Randomly crop 3D patches from volumes.
+
+    img: (B, C, D, H, W)
+    lab: (B, D, H, W)
+    roi_size: [pD, pH, pW]
+    num_samples: patches per volume
+
+    returns:
+        img_p: (B * num_samples, C, pD, pH, pW)
+        lab_p: (B * num_samples, pD, pH, pW)
+    """
+    B, C, D, H, W = img.shape
+    pD, pH, pW = roi_size
+    assert pD <= D and pH <= H and pW <= W, (
+        f"Patch size {roi_size} is larger than volume {(D, H, W)}"
+    )
+
+    device = img.device
+    img_p = torch.empty(
+        (B * num_samples, C, pD, pH, pW),
+        dtype=img.dtype,
+        device=device,
+    )
+    lab_p = torch.empty(
+        (B * num_samples, pD, pH, pW),
+        dtype=lab.dtype,
+        device=lab.device,
+    )
+
+    out_idx = 0
+    for b in range(B):
+        for _ in range(num_samples):
+            z = torch.randint(0, D - pD + 1, (1,), device=device).item()
+            y = torch.randint(0, H - pH + 1, (1,), device=device).item()
+            x = torch.randint(0, W - pW + 1, (1,), device=device).item()
+
+            img_p[out_idx] = img[b, :, z:z + pD, y:y + pH, x:x + pW]
+            lab_p[out_idx] = lab[b, z:z + pD, y:y + pH, x:x + pW]
+            out_idx += 1
+
+    return img_p, lab_p
 
 
 def freeze_backbone(model):
@@ -51,29 +98,56 @@ def unfreeze_encoder_tail(model, n_stages=2):
             p.requires_grad = True
 
 
-def one_epoch(model, loader, loss_fn, opt, scaler, device,
-              amp=True, cldice_loss_fn=None, cldice_weight: float = 0.0):
+def one_epoch(
+    model,
+    loader,
+    loss_fn,
+    opt,
+    scaler,
+    device,
+    amp=True,
+    cldice_loss_fn=None,
+    cldice_weight: float = 0.0,
+    patch_size=None,
+    samples_per_volume: int = 1,
+):
     model.train()
     running = []
+
     for i, batch in enumerate(loader, start=1):
         img, lab = batch["image"].to(device), batch["label"].to(device).long()
         opt.zero_grad(set_to_none=True)
 
+        # Patch-based training
+        if patch_size is not None and samples_per_volume > 0:
+            img, lab = random_multi_crop_3d(
+                img,
+                lab,
+                roi_size=patch_size,
+                num_samples=samples_per_volume,
+            )
+
         with autocast(enabled=amp):
-            logits = model(img)  # (B,3,D,H,W)
+            logits = model(img)  # (B*,3,pD,pH,pW)
+
+            # Ensure labels are in [0, num_classes-1]
+            n_classes = logits.shape[1]
+            invalid = (lab < 0) | (lab >= n_classes)
+            if invalid.any():
+                lab = lab.clone()
+                lab[invalid] = 0
+
             base_loss = loss_fn(logits, lab)
             loss = base_loss
 
-            # --- add soft-clDice on union-of-vessels (A ∪ V) if enabled ---
+            # Soft clDice on union-of-vessels (A ∪ V) if enabled
             if cldice_loss_fn is not None and cldice_weight > 0.0:
-                probs = F.softmax(logits, dim=1)  # (B,3,...)
+                probs = F.softmax(logits, dim=1)  # (B*,3,...)
 
-                # ground truth vessel union: artery or vein -> 1, background -> 0
-                vessel_lab = (lab > 0).long()  # (B,D,H,W)
-                vessel_gt = vessel_lab.unsqueeze(1).float()  # (B,1,D,H,W)
+                vessel_lab = (lab > 0).long()           # (B*,D,H,W)
+                vessel_gt = vessel_lab.unsqueeze(1).float()  # (B*,1,D,H,W)
 
-                # union of artery+vein probabilities
-                vessel_probs = probs[:, 1:3].sum(dim=1, keepdim=True)  # (B,1,D,H,W)
+                vessel_probs = probs[:, 1:3].sum(dim=1, keepdim=True)
                 vessel_probs = vessel_probs.clamp(0.0, 1.0)
 
                 cl_loss = cldice_loss_fn(vessel_gt, vessel_probs)
@@ -84,26 +158,43 @@ def one_epoch(model, loader, loss_fn, opt, scaler, device,
         scaler.update()
         running.append(loss.item())
 
+        if i == 1:
+            # One-time debug: make sure patches are not full volume
+            print("DEBUG train patch shape:", img.shape, lab.shape, flush=True)
+
         if i % 50 == 0 or i == 1:
             print(f"  [train] batch {i}/{len(loader)}  loss={loss.item():.4f}")
 
     return float(np.mean(running))
 
+
 @torch.no_grad()
-def eval_epoch(model, loader, device, cldice_metric=None):
+def eval_epoch(model, loader, device, cldice_metric=None, patch_size=None):
+    """
+    Evaluation on full volumes via sliding-window inference.
+    """
     model.eval()
     dice_scores = []
     cldice_scores = []
 
     for batch in loader:
         img, lab = batch["image"].to(device), batch["label"].to(device).long()
-        logits = model(img)
+
+        if patch_size is not None:
+            logits = sliding_window_inference(
+                img,                 # (B,C,D,H,W)
+                roi_size=patch_size, # e.g. [96, 96, 96] from YAML
+                sw_batch_size=2,
+                predictor=model,
+            )
+        else:
+            logits = model(img)
+
         probs = F.softmax(logits, dim=1)
         pred = probs.argmax(1)  # (B,D,H,W)
 
         B = pred.shape[0]
         for b in range(B):
-            # union-of-vessels (A ∪ V) vs background
             p = (pred[b] > 0)
             g = (lab[b] > 0)
 
@@ -113,8 +204,27 @@ def eval_epoch(model, loader, device, cldice_metric=None):
             dice_scores.append(dice.item())
 
             if cldice_metric is not None:
-                p_np = p.detach().cpu().numpy().astype(bool)
-                g_np = g.detach().cpu().numpy().astype(bool)
+                # Wrap as (1,1,D,H,W) so we can use interpolate
+                p_t = p.float().unsqueeze(0).unsqueeze(0)
+                g_t = g.float().unsqueeze(0).unsqueeze(0)
+
+                # Choose a downsample factor (2 is usually safe; try 4 if still too slow)
+                ds_factor = 2
+
+                p_ds = torch.nn.functional.interpolate(
+                    p_t,
+                    scale_factor=1.0 / ds_factor,
+                    mode="nearest",
+                )[0, 0] > 0.5
+                g_ds = torch.nn.functional.interpolate(
+                    g_t,
+                    scale_factor=1.0 / ds_factor,
+                    mode="nearest",
+                )[0, 0] > 0.5
+
+                p_np = p_ds.cpu().numpy().astype(bool)
+                g_np = g_ds.cpu().numpy().astype(bool)
+
                 cld = cldice_metric(p_np, g_np)
                 cldice_scores.append(cld)
 
@@ -123,54 +233,85 @@ def eval_epoch(model, loader, device, cldice_metric=None):
     return mean_dice, mean_cldice
 
 
-def make_items_from_dirs(image_dir, label_dir):
-    image_dir = pathlib.Path(image_dir)
-    label_dir = pathlib.Path(label_dir)
-    items = []
+class NPZVolume(Dataset):
+    """
+    Dataset for nnUNet-preprocessed .npz cases.
 
-    for img_path in sorted(image_dir.glob("*.nii*")):
-        img_name = img_path.name
+    Expects each .npz to contain:
+      - 'image': (C, X, Y, Z), float32
+      - 'label': (1, X, Y, Z) or (X, Y, Z), int
+    """
+    def __init__(self, npz_dir, cfg, train=True, transform=None):
+        self.npz_dir = pathlib.Path(npz_dir)
+        self.cfg = cfg
+        self.train = train
+        self.transform = transform
 
-        # Handle pattern: image_###.nii.gz -> label_###.nii.gz
-        if img_name.startswith("image_"):
-            lbl_name = "label_" + img_name[len("image_"):]
-        else:
-            # Fallback: same filename if matching names
-            lbl_name = img_name
+        self.files = sorted(self.npz_dir.glob("*.npz"))
+        if not self.files:
+            raise RuntimeError(
+                f"No .npz files found in {self.npz_dir}. "
+                f"Make sure you ran the nnUNet preprocessor and pointed "
+                f"cfg['data']['train_images'] / ['val_images'] to that folder."
+            )
 
-        lab_path = label_dir / lbl_name
-        if not lab_path.exists():
-            print(f"WARNING: no label for {img_name}, expected {lab_path}")
-            continue
+    def __len__(self):
+        return len(self.files)
 
-        items.append((str(img_path), str(lab_path)))
+    def __getitem__(self, idx):
+        fpath = self.files[idx]
+        data = np.load(fpath, allow_pickle=True)
 
-    if not items:
-        raise RuntimeError(
-            f"No image/label pairs found in {image_dir} and {label_dir}. "
-            f"Check that filenames follow image_### / label_### pattern."
-        )
+        img = data["image"]  # (C, X, Y, Z)
+        lab = data["label"]  # (1, X, Y, Z) or (X, Y, Z)
 
-    return items
+        # Convert to torch tensors
+        img = torch.from_numpy(img).float()  # keep (C, D, H, W)
+
+        # Remove channel dim for labels so train_av's code sees (D, H, W)
+        lab = np.array(lab)
+        if lab.ndim == 4 and lab.shape[0] == 1:
+            lab = lab[0]  # (D, H, W)
+        lab = torch.from_numpy(lab).long()
+
+        sample = {
+            "image": img,
+            "label": lab,
+            "case_id": fpath.stem,
+        }
+
+        if self.transform is not None:
+            sample = self.transform(sample)
+
+        return sample
 
 
 
 def make_loader(kind, cfg, train=True):
-    if kind == "train":
-        items = make_items_from_dirs(cfg["data"]["train_images"], cfg["data"]["train_labels"])
-    else:
-        items = make_items_from_dirs(cfg["data"]["val_images"], cfg["data"]["val_labels"])
+    """
+    Loader for nnUNet-preprocessed .npz volumes.
 
-    ds = NiftiVolume(items, cfg, train=train)
-    aug = make_aug_transforms(cfg, train=train)
-    ds.set_transform(aug)
+    cfg["data"]["train_images"] and cfg["data"]["val_images"] should point
+    to folders that contain the .npz files produced by the modified
+    DefaultPreprocessor (image+label+properties).
+    """
+    if kind == "train":
+        npz_dir = cfg["data"]["train_images"]
+    else:
+        npz_dir = cfg["data"]["val_images"]
+
+    aug = make_aug_transforms(cfg, train=train)  # make sure this no longer does file loading itself
+
+    ds = NPZVolume(npz_dir, cfg, train=train, transform=aug)
+
     return DataLoader(
         ds,
         batch_size=cfg["optim"]["batch_size"],
         shuffle=train,
-        num_workers=16, # Switch back to 4 after testing
+        num_workers=8,  # adjust if needed
         pin_memory=True,
     )
+
 
 
 def main(cfg):
@@ -181,9 +322,13 @@ def main(cfg):
         "val_dice": [],      # Dice on vessel union (A∪V vs BG)
         "val_clDice": [],    # hard clDice on vessel union (A∪V vs BG)
     }
-    
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(cfg["seed"])
+
+    # Patch-based training settings from YAML (av_ct.yaml)
+    patch_size = cfg["data"].get("patch_size", [96, 96, 96])
+    samples_per_volume = cfg["data"].get("samples_per_volume", 1)
 
     # Data
     train_loader = make_loader("train", cfg, train=True)
@@ -256,8 +401,14 @@ def main(cfg):
             amp=cfg["optim"]["amp"],
             cldice_loss_fn=cldice_loss_fn,
             cldice_weight=cldice_weight,
+            patch_size=patch_size,
+            samples_per_volume=samples_per_volume,
         )
-        va_dice, va_cldice = eval_epoch(model, val_loader, device, cldice_metric=hard_cldice)
+        va_dice, va_cldice = eval_epoch(
+            model, val_loader, device,
+            cldice_metric=hard_cldice,
+            patch_size=patch_size,
+        )
 
         history["epoch"].append(epoch + 1)
         history["stage"].append("S1")
@@ -288,8 +439,14 @@ def main(cfg):
             amp=cfg["optim"]["amp"],
             cldice_loss_fn=cldice_loss_fn,
             cldice_weight=cldice_weight,
+            patch_size=patch_size,
+            samples_per_volume=samples_per_volume,
         )
-        va_dice, va_cldice = eval_epoch(model, val_loader, device, cldice_metric=hard_cldice)
+        va_dice, va_cldice = eval_epoch(
+            model, val_loader, device,
+            cldice_metric=hard_cldice,
+            patch_size=patch_size,
+        )
 
         history["epoch"].append(epoch + 1)
         history["stage"].append("S2")
@@ -302,7 +459,7 @@ def main(cfg):
             torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_stage2.pt")
 
         print(
-            f"[S1][{epoch+1}/{cfg['optim']['epochs_stage1']}] "
+            f"[S2][{epoch+1}/{cfg['optim']['epochs_stage1']}] "
             f"loss={tr:.4f} valDice(A∪V)={va_dice:.4f} valClDice(A∪V)={va_cldice:.4f}"
         )
 
