@@ -459,7 +459,7 @@ def main(cfg):
             torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_stage2.pt")
 
         print(
-            f"[S2][{epoch+1}/{cfg['optim']['epochs_stage1']}] "
+            f"[S2][{epoch+1}/{cfg['optim']['epochs_stage2']}] "
             f"loss={tr:.4f} valDice(A∪V)={va_dice:.4f} valClDice(A∪V)={va_cldice:.4f}"
         )
 
