@@ -5,6 +5,8 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
 from monai.inferers import sliding_window_inference
+import multiprocessing as mp
+from multiprocessing import Pool, cpu_count
 
 from .inference import build_model
 from .losses import CompositeLoss
@@ -25,7 +27,7 @@ def random_multi_crop_3d(
     lab,
     roi_size,
     num_samples,
-    fg_prob: float = 0.5,
+    fg_prob: float = 0.6,
 ):
     """
     Randomly crop 3D patches from volumes, with optional vessel-biased sampling.
@@ -77,6 +79,14 @@ def random_multi_crop_3d(
             out_idx += 1
 
     return img_p, lab_p
+
+
+def _compute_cldice_worker(p_np, g_np, cldice_metric):
+    """
+    Worker for multiprocessing: computes clDice for one case.
+    p_np, g_np are downsampled boolean numpy arrays (D, H, W).
+    """
+    return float(cldice_metric(p_np, g_np))
 
 
 def freeze_backbone(model):
@@ -184,21 +194,33 @@ def one_epoch(
 
 
 @torch.no_grad()
-def eval_epoch(model, loader, device, cldice_metric=None, patch_size=None):
+def eval_epoch(
+    model,
+    loader,
+    device,
+    cldice_metric=None,
+    patch_size=None,
+    num_metric_workers: int = 0,
+):
     """
     Evaluation on full volumes via sliding-window inference.
+    Dice is computed in the main process.
+    clDice can be parallelized across volumes with multiprocessing.
     """
     model.eval()
     dice_scores = []
     cldice_scores = []
+
+    # We'll store downsampled numpy masks here for clDice
+    cldice_cases = []  # list of (p_np, g_np)
 
     for batch in loader:
         img, lab = batch["image"].to(device), batch["label"].to(device).long()
 
         if patch_size is not None:
             logits = sliding_window_inference(
-                img,                 # (B,C,D,H,W)
-                roi_size=patch_size, # e.g. [96, 96, 96] from YAML
+                img,                 # (B, C, D, H, W)
+                roi_size=patch_size, # e.g. [96, 96, 96]
                 sw_batch_size=2,
                 predictor=model,
             )
@@ -206,42 +228,59 @@ def eval_epoch(model, loader, device, cldice_metric=None, patch_size=None):
             logits = model(img)
 
         probs = F.softmax(logits, dim=1)
-        pred = probs.argmax(1)  # (B,D,H,W)
+        pred = probs.argmax(1)  # (B, D, H, W)
 
         B = pred.shape[0]
         for b in range(B):
             p = (pred[b] > 0)
             g = (lab[b] > 0)
 
+            # ---- Dice on full-res mask (still in main process) ----
             inter = (p & g).sum().float()
             denom = p.sum().float() + g.sum().float()
             dice = (2.0 * inter) / (denom + 1e-5)
             dice_scores.append(dice.item())
 
+            # ---- Prepare downsampled masks for clDice ----
             if cldice_metric is not None:
-                # Wrap as (1,1,D,H,W) so we can use interpolate
-                p_t = p.float().unsqueeze(0).unsqueeze(0)
-                g_t = g.float().unsqueeze(0).unsqueeze(0)
+                # simple stride-based downsample to reduce memory/compute
+                ds_factor = 2   # try 2 or 4 if still slow/heavy
+                p_small = p[::ds_factor, ::ds_factor, ::ds_factor]
+                g_small = g[::ds_factor, ::ds_factor, ::ds_factor]
 
-                # Choose a downsample factor (2 is usually safe; try 4 if still too slow)
-                ds_factor = 2
+                p_np = p_small.cpu().numpy().astype(bool)
+                g_np = g_small.cpu().numpy().astype(bool)
+                cldice_cases.append((p_np, g_np))
 
-                p_ds = torch.nn.functional.interpolate(
-                    p_t,
-                    scale_factor=1.0 / ds_factor,
-                    mode="nearest",
-                )[0, 0] > 0.5
-                g_ds = torch.nn.functional.interpolate(
-                    g_t,
-                    scale_factor=1.0 / ds_factor,
-                    mode="nearest",
-                )[0, 0] > 0.5
+    if num_metric_workers > 0:
+        print(
+            f"[eval_epoch] Using multiprocessing for clDice: "
+            f"{len(cldice_cases)} volumes, {num_metric_workers} workers",
+            flush=True,
+        )
+        with mp.Pool(processes=num_metric_workers) as pool:
+            results = pool.starmap(
+                _compute_cldice_worker,
+                [(p_np, g_np, cldice_metric) for (p_np, g_np) in cldice_cases],
+            )
 
-                p_np = p_ds.cpu().numpy().astype(bool)
-                g_np = g_ds.cpu().numpy().astype(bool)
+    # ---- Compute clDice (optionally in parallel) ----
+    if cldice_metric is not None and cldice_cases:
+        if num_metric_workers > 0:
+            # true multi-process parallelism; you'll see extra python PIDs
+            with mp.Pool(processes=num_metric_workers) as pool:
+                results = pool.starmap(
+                    _compute_cldice_worker,
+                    [(p_np, g_np, cldice_metric) for (p_np, g_np) in cldice_cases],
+                )
+        else:
+            # fallback: sequential in main process
+            results = [
+                _compute_cldice_worker(p_np, g_np, cldice_metric)
+                for (p_np, g_np) in cldice_cases
+            ]
 
-                cld = cldice_metric(p_np, g_np)
-                cldice_scores.append(cld)
+        cldice_scores.extend(results)
 
     mean_dice = float(np.mean(dice_scores)) if dice_scores else 0.0
     mean_cldice = float(np.mean(cldice_scores)) if cldice_scores else 0.0
@@ -315,15 +354,17 @@ def make_loader(kind, cfg, train=True):
     else:
         npz_dir = cfg["data"]["val_images"]
 
-    aug = make_aug_transforms(cfg, train=train)  # make sure this no longer does file loading itself
+    aug = make_aug_transforms(cfg, train=train)
 
     ds = NPZVolume(npz_dir, cfg, train=train, transform=aug)
 
+    # IMPORTANT: volumes have variable shapes, so we must use batch_size=1
+    # and rely on random_multi_crop_3d for "effective" batch size.
     return DataLoader(
         ds,
-        batch_size=cfg["optim"]["batch_size"],
+        batch_size=1,
         shuffle=train,
-        num_workers=8,  # adjust if needed
+        num_workers=8,   # or fewer if SCC complains
         pin_memory=True,
     )
 
@@ -337,6 +378,9 @@ def main(cfg):
         "val_dice": [],      # Dice on vessel union (A∪V vs BG)
         "val_clDice": [],    # hard clDice on vessel union (A∪V vs BG)
     }
+
+    val_cldice_workers = cfg["optim"].get("val_cldice_workers", 0)
+    print("val_cldice_workers =", val_cldice_workers, flush=True)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(cfg["seed"])
@@ -388,21 +432,20 @@ def main(cfg):
     loss_fn = CompositeLoss(
         num_classes=cfg["model"]["num_classes"],
         class_weights=cfg["loss"]["class_weights"],
-        soft_cldice_weight=0.0,  # we now handle clDice explicitly below
+        soft_cldice_weight=0.0,
         soft_cldice_iters=cfg["loss"]["soft_cldice_iters"],
     ).to(device)
 
-    # clDice component on union-of-vessels (A ∪ V vs BG)
-    if cfg["loss"]["use_soft_cldice"]:
+    # clDice weights per stage (from YAML)
+    use_soft = cfg["loss"].get("use_soft_cldice", False)
+    cldice_weight_s1 = cfg["loss"].get("soft_cldice_weight_stage1", 0.0) if use_soft else 0.0
+    cldice_weight_s2 = cfg["loss"].get("soft_cldice_weight_stage2", 0.0) if use_soft else 0.0
+
+    cldice_loss_fn = None
+    if (cldice_weight_s1 > 0.0) or (cldice_weight_s2 > 0.0):
         cldice_loss_fn = SoftCLDiceLoss(
             iter_=cfg["loss"]["soft_cldice_iters"], smooth=1.0
         ).to(device)
-        cldice_weight_s1 = cfg["loss"]["soft_cldice_weight_stage1"]
-        cldice_weight_s2 = cfg["loss"]["soft_cldice_weight_stage2"]
-    else:
-        cldice_loss_fn = None
-        cldice_weight_s1 = 0.0
-        cldice_weight_s2 = 0.0
 
 
     # Stage 1: freeze backbone, train head and decoder
@@ -414,7 +457,7 @@ def main(cfg):
     )
     scaler = GradScaler(enabled=cfg["optim"]["amp"])
 
-    best = -1.0
+    best_cl = -1.0
     for epoch in range(cfg["optim"]["epochs_stage1"]):
         tr = one_epoch(
             model, train_loader, loss_fn, opt, scaler, device,
@@ -425,9 +468,12 @@ def main(cfg):
             samples_per_volume=samples_per_volume,
         )
         va_dice, va_cldice = eval_epoch(
-            model, val_loader, device,
+            model,
+            val_loader,
+            device,
             cldice_metric=hard_cldice,
             patch_size=patch_size,
+            num_metric_workers=val_cldice_workers,
         )
 
         history["epoch"].append(epoch + 1)
@@ -436,9 +482,9 @@ def main(cfg):
         history["val_dice"].append(va_dice)
         history["val_clDice"].append(va_cldice)
 
-        if va_dice > best:
-            best = va_dice
-            torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_stage1.pt")
+        if va_cldice > best_cl:
+            best_cl = va_cldice
+            torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_cldice.pt")
 
         print(
             f"[S1][{epoch+1}/{cfg['optim']['epochs_stage1']}] "
@@ -463,9 +509,12 @@ def main(cfg):
             samples_per_volume=samples_per_volume,
         )
         va_dice, va_cldice = eval_epoch(
-            model, val_loader, device,
+            model,
+            val_loader,
+            device,
             cldice_metric=hard_cldice,
             patch_size=patch_size,
+            num_metric_workers=val_cldice_workers,
         )
 
         history["epoch"].append(epoch + 1)
@@ -474,9 +523,9 @@ def main(cfg):
         history["val_dice"].append(va_dice)
         history["val_clDice"].append(va_cldice)
 
-        if va_dice > best:
-            best = va_dice
-            torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_stage2.pt")
+        if va_cldice > best_cl:
+            best_cl = va_cldice
+            torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_cldice.pt")
 
         print(
             f"[S2][{epoch+1}/{cfg['optim']['epochs_stage2']}] "
