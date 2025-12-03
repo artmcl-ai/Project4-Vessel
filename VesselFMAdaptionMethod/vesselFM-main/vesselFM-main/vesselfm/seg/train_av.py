@@ -20,18 +20,21 @@ def set_seed(s):
     torch.cuda.manual_seed_all(s)
 
 
-def random_multi_crop_3d(img, lab, roi_size, num_samples):
+def random_multi_crop_3d(
+    img,
+    lab,
+    roi_size,
+    num_samples,
+    fg_prob: float = 0.5,
+):
     """
-    Randomly crop 3D patches from volumes.
+    Randomly crop 3D patches from volumes, with optional vessel-biased sampling.
 
     img: (B, C, D, H, W)
     lab: (B, D, H, W)
     roi_size: [pD, pH, pW]
     num_samples: patches per volume
-
-    returns:
-        img_p: (B * num_samples, C, pD, pH, pW)
-        lab_p: (B * num_samples, pD, pH, pW)
+    fg_prob: probability a given patch is forced to contain foreground (label > 0)
     """
     B, C, D, H, W = img.shape
     pD, pH, pW = roi_size
@@ -40,26 +43,37 @@ def random_multi_crop_3d(img, lab, roi_size, num_samples):
     )
 
     device = img.device
-    img_p = torch.empty(
-        (B * num_samples, C, pD, pH, pW),
-        dtype=img.dtype,
-        device=device,
-    )
-    lab_p = torch.empty(
-        (B * num_samples, pD, pH, pW),
-        dtype=lab.dtype,
-        device=lab.device,
-    )
+    img_p = torch.empty((B * num_samples, C, pD, pH, pW),
+                        dtype=img.dtype, device=device)
+    lab_p = torch.empty((B * num_samples, pD, pH, pW),
+                        dtype=lab.dtype, device=lab.device)
 
     out_idx = 0
     for b in range(B):
-        for _ in range(num_samples):
-            z = torch.randint(0, D - pD + 1, (1,), device=device).item()
-            y = torch.randint(0, H - pH + 1, (1,), device=device).item()
-            x = torch.randint(0, W - pW + 1, (1,), device=device).item()
+        # foreground voxel indices for this volume (vessel union)
+        fg_mask = (lab[b] > 0)
+        fg_idx = torch.nonzero(fg_mask, as_tuple=False)  # (N_fg, 3) [z,y,x]
 
-            img_p[out_idx] = img[b, :, z:z + pD, y:y + pH, x:x + pW]
-            lab_p[out_idx] = lab[b, z:z + pD, y:y + pH, x:x + pW]
+        for _ in range(num_samples):
+            use_fg = (fg_idx.numel() > 0) and (torch.rand(1, device=device) < fg_prob)
+
+            if use_fg:
+                # pick a random foreground voxel as (approximate) patch center
+                zyx = fg_idx[torch.randint(len(fg_idx), (1,), device=device)].cpu().numpy()
+                zc, yc, xc = int(zyx[0]), int(zyx[1]), int(zyx[2])
+
+                # compute start coords so patch stays in bounds
+                z = max(0, min(zc - pD // 2, D - pD))
+                y = max(0, min(yc - pH // 2, H - pH))
+                x = max(0, min(xc - pW // 2, W - pW))
+            else:
+                # uniform random crop
+                z = torch.randint(0, D - pD + 1, (1,), device=device).item()
+                y = torch.randint(0, H - pH + 1, (1,), device=device).item()
+                x = torch.randint(0, W - pW + 1, (1,), device=device).item()
+
+            img_p[out_idx] = img[b, :, z:z+pD, y:y+pH, x:x+pW]
+            lab_p[out_idx] = lab[b, z:z+pD, y:y+pH, x:x+pW]
             out_idx += 1
 
     return img_p, lab_p
