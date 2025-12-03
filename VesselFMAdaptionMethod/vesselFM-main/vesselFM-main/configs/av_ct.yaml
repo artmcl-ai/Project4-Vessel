@@ -26,9 +26,10 @@ model:
 
 loss:
   dice_ce_weight: 1.0
-  class_weights: [0.2, 0.4, 0.4]   # tweak per dataset imbalance
+  class_weights: [0.1, 0.45, 0.45]   # tweak per dataset imbalance
   use_soft_cldice: true
-  soft_cldice_weight: 0.2 # Default was 0.2
+  soft_cldice_weight_stage1: 0.2 # Default was 0.2
+  soft_cldice_weight_stage2: 0.5
   soft_cldice_iters: 3
 
 optim:

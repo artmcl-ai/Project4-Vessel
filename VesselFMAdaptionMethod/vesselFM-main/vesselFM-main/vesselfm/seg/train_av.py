@@ -59,8 +59,8 @@ def random_multi_crop_3d(
 
             if use_fg:
                 # pick a random foreground voxel as (approximate) patch center
-                zyx = fg_idx[torch.randint(len(fg_idx), (1,), device=device)].cpu().numpy()
-                zc, yc, xc = int(zyx[0]), int(zyx[1]), int(zyx[2])
+                rand_idx = torch.randint(fg_idx.shape[0], (1,), device=device).item()
+                zc, yc, xc = fg_idx[rand_idx].tolist()  # now zc,yc,xc are ints
 
                 # compute start coords so patch stays in bounds
                 z = max(0, min(zc - pD // 2, D - pD))
@@ -139,6 +139,7 @@ def one_epoch(
                 lab,
                 roi_size=patch_size,
                 num_samples=samples_per_volume,
+                fg_prob=0.5,  # 50% of patches vessel-focused
             )
 
         with autocast(enabled=amp):
@@ -391,13 +392,18 @@ def main(cfg):
         soft_cldice_iters=cfg["loss"]["soft_cldice_iters"],
     ).to(device)
 
-    # Optional clDice component on union-of-vessels (A ∪ V vs BG)
-    cldice_weight = cfg["loss"]["soft_cldice_weight"] if cfg["loss"]["use_soft_cldice"] else 0.0
-    cldice_loss_fn = None
-    if cldice_weight > 0:
+    # clDice component on union-of-vessels (A ∪ V vs BG)
+    if cfg["loss"]["use_soft_cldice"]:
         cldice_loss_fn = SoftCLDiceLoss(
             iter_=cfg["loss"]["soft_cldice_iters"], smooth=1.0
         ).to(device)
+        cldice_weight_s1 = cfg["loss"]["soft_cldice_weight_stage1"]
+        cldice_weight_s2 = cfg["loss"]["soft_cldice_weight_stage2"]
+    else:
+        cldice_loss_fn = None
+        cldice_weight_s1 = 0.0
+        cldice_weight_s2 = 0.0
+
 
     # Stage 1: freeze backbone, train head and decoder
     freeze_backbone(model)
@@ -414,7 +420,7 @@ def main(cfg):
             model, train_loader, loss_fn, opt, scaler, device,
             amp=cfg["optim"]["amp"],
             cldice_loss_fn=cldice_loss_fn,
-            cldice_weight=cldice_weight,
+            cldice_weight=cldice_weight_s1,
             patch_size=patch_size,
             samples_per_volume=samples_per_volume,
         )
@@ -452,7 +458,7 @@ def main(cfg):
             model, train_loader, loss_fn, opt, scaler, device,
             amp=cfg["optim"]["amp"],
             cldice_loss_fn=cldice_loss_fn,
-            cldice_weight=cldice_weight,
+            cldice_weight=cldice_weight_s2,
             patch_size=patch_size,
             samples_per_volume=samples_per_volume,
         )
