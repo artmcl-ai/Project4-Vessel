@@ -1,6 +1,6 @@
 # Project Overview
 
-This repository focuses on developing a model capable of accurately segmenting and classifying veins and arteries from non-contrast CT images. To support this goal, we leverage **VesselFM** — a pretrained model designed for vessel segmentation across diverse imaging domains. You can find VesselFM on GitHub: https://github.com/bwittmann/vesselFM :contentReference[oaicite:1]{index=1}
+This repository focuses on developing a model capable of accurately segmenting and classifying veins and arteries from non-contrast CT images. To support this goal, we leverage **VesselFM** — a pretrained model designed for vessel segmentation across diverse imaging domains. You can find VesselFM on GitHub: https://github.com/bwittmann/vesselFM
 
 ## Repository Structure
 
