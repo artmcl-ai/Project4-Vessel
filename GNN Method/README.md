@@ -43,10 +43,10 @@ In `finetune_vesselfm.py`, update the following variables:
 python finetune_vesselfm.py
 ```
 
-## 📁 Binary Mask Creation
+## 📁 Binary Mask Prediction
 
-The script `generate_binary_segmentation_masks.py` uses the finetune VesselFM model (not included in this repository) to generate binary
-segmentation masks for input CT images
+The script `generate_binary_segmentation_masks.py` uses the finetune VesselFM model (not included in this repository) to predict binary
+segmentation masks for given input CT images
 
 ### Required Path Setup
 In `generate_binary_segmentation_masks.py`, update the following variables:
