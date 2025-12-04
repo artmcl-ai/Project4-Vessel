@@ -2,6 +2,27 @@
 This repository contains everything needed to set up the Graph Neural Network (GNN) method for non-contrast artery and vein vessel segmentation.
 
 
+## 📁 Finetune VesselFM
+
+The script `finetune_vesselfm.py` finetunes the base VesselFM which can be found here: (https://huggingface.co/bwittmann/vesselFM).
+
+### Required Path Setup
+In `finetune_vesselfm.py`, update the following variables:
+
+| Variable | Description |
+|---------|-------------|
+| `pretrained_ckpt ` | Path to the base VesselFM model|
+| `image_dir ` | Path to the folder containing your CT images |
+| `mask_dir  ` | Path to the folder containing your GT binary masks |
+
+---
+
+## Usage
+
+```bash
+python finetune_vesselfm.py
+```
+
 ## 📁 Binary Mask Creation
 
 The script `generate_binary_segmentation_masks.py` uses the finetune VesselFM model (not included in this repository) to generate binary
