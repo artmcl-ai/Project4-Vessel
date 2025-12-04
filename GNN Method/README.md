@@ -21,6 +21,9 @@ In `gt_to_binary_masks.py`, update the following variables:
 ```bash
 python gt_to_binary_masks.py
 ```
+***
+***
+***
 
 ## 📁 Finetune VesselFM
 
@@ -42,6 +45,9 @@ In `finetune_vesselfm.py`, update the following variables:
 ```bash
 python finetune_vesselfm.py
 ```
+***
+***
+***
 
 ## 📁 Binary Mask Prediction
 
@@ -64,6 +70,9 @@ In `generate_binary_segmentation_masks.py`, update the following variables:
 ```bash
 python generate_binary_segmentation_masks.py
 ```
+***
+***
+***
 
 ## 📁 Graph Generation
 
@@ -85,3 +94,6 @@ In `Graph_Generator.py`, update the following variables:
 ```bash
 python Graph_Generator.py
 ```
+***
+***
+***
