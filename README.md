@@ -4,7 +4,7 @@ This repository focuses on developing a model capable of accurately segmenting a
 
 ## Repository Structure
 
-The project is divided into three primary folders, each representing a distinct experimental method:
+The project is divided into three primary folders, each representing a different appraoch:
 
 - **GNN Approach**  
   A graph neural network designed to leverage vessel topology and connectivity.
