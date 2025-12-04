@@ -1,0 +1,279 @@
+#!/usr/bin/env python
+
+import os
+import argparse
+from pathlib import Path
+
+import numpy as np
+import nibabel as nib
+from scipy.ndimage import zoom
+
+
+def resample_to_spacing(data, src_spacing, tgt_spacing, order):
+    """
+    data: np.ndarray with shape (X, Y, Z) or (X, Y, Z, C)
+    src_spacing, tgt_spacing: iterable of length 3
+    order: interpolation order (3 = cubic for image, 0 = nearest for label)
+    """
+    src_spacing = np.array(src_spacing, dtype=np.float32)
+    tgt_spacing = np.array(tgt_spacing, dtype=np.float32)
+    zoom_factors = src_spacing / tgt_spacing
+
+    if data.ndim == 3:
+        factors = zoom_factors
+    elif data.ndim == 4:
+        factors = (*zoom_factors, 1.0)  # don't scale channels
+    else:
+        raise ValueError(f"Unsupported data ndim {data.ndim}, expected 3 or 4.")
+
+    resampled = zoom(data, factors, order=order)
+    return resampled
+
+
+def compute_label_bbox(label, margin=0):
+    """
+    Compute bounding box of non-zero labels, with margin (in voxels).
+    label: np.ndarray (X, Y, Z) integer labels
+    returns: slices or None if no foreground
+    """
+    if np.max(label) == 0:
+        return None
+
+    coords = np.where(label > 0)
+    xmin, xmax = coords[0].min(), coords[0].max()
+    ymin, ymax = coords[1].min(), coords[1].max()
+    zmin, zmax = coords[2].min(), coords[2].max()
+
+    xmin = max(xmin - margin, 0)
+    ymin = max(ymin - margin, 0)
+    zmin = max(zmin - margin, 0)
+
+    xmax = min(xmax + margin, label.shape[0] - 1)
+    ymax = min(ymax + margin, label.shape[1] - 1)
+    zmax = min(zmax + margin, label.shape[2] - 1)
+
+    return (slice(xmin, xmax + 1),
+            slice(ymin, ymax + 1),
+            slice(zmin, zmax + 1))
+
+
+def zscore_normalize(img, mask=None, eps=1e-8):
+    """
+    Z-score normalization with optional mask (e.g., non-zero voxels).
+    img: np.ndarray float
+    mask: boolean array or None
+    """
+    if mask is None:
+        mask = np.ones_like(img, dtype=bool)
+    vals = img[mask]
+    if vals.size == 0:
+        return img
+    mean = vals.mean()
+    std = vals.std()
+    if std < eps:
+        std = eps
+    img = (img - mean) / std
+    return img
+
+
+def preprocess_pair(
+    img_path,
+    lbl_path,
+    out_img_dir,
+    out_lbl_dir,
+    target_spacing,
+    clip_range=None,
+    do_zscore=False,
+    crop_mode="label",
+    crop_margin=10,
+):
+    """
+    Preprocess one image+label pair and save as .nii.gz.
+
+    img_path, lbl_path: Path objects (input .nii/.nii.gz)
+    out_img_dir, out_lbl_dir: Path objects (output directories)
+    """
+    print(f"Processing: {img_path.name}")
+
+    img_nii = nib.load(str(img_path))
+    img = img_nii.get_fdata().astype(np.float32)
+    src_spacing = img_nii.header.get_zooms()[:3]
+
+    # labels (if provided)
+    if lbl_path is not None:
+        lbl_nii = nib.load(str(lbl_path))
+        lbl = lbl_nii.get_fdata().astype(np.int16)
+    else:
+        lbl_nii = None
+        lbl = None
+
+    # 1) Resample image (and label) to target spacing
+    if target_spacing is not None:
+        img = resample_to_spacing(img, src_spacing, target_spacing, order=3)
+        if lbl is not None:
+            lbl = resample_to_spacing(lbl, src_spacing, target_spacing, order=0)
+        spacing = target_spacing
+    else:
+        spacing = src_spacing
+
+    # 2) Intensity clipping
+    if clip_range is not None:
+        lo, hi = clip_range
+        img = np.clip(img, lo, hi)
+
+    # 3) Z-score normalization (on non-zero or all voxels)
+    if do_zscore:
+        if lbl is not None:
+            # Use body/vessel region if you prefer; here: non-zero intensity
+            mask = img != 0
+        else:
+            mask = img != 0
+        img = zscore_normalize(img, mask=mask)
+
+    # 4) Cropping
+    # For training, you usually want crop_mode="label" to focus on vessel region.
+    # For inference, use crop_mode="none" so volume size stays global.
+    if crop_mode == "label" and lbl is not None:
+        bbox = compute_label_bbox(lbl, margin=crop_margin)
+        if bbox is not None:
+            img = img[bbox]
+            lbl = lbl[bbox]
+    elif crop_mode == "none":
+        # no cropping
+        pass
+    elif crop_mode == "body":
+        # simple body mask (non-zero intensities)
+        mask = img != 0
+        if np.any(mask):
+            coords = np.where(mask)
+            xmin, xmax = coords[0].min(), coords[0].max()
+            ymin, ymax = coords[1].min(), coords[1].max()
+            zmin, zmax = coords[2].min(), coords[2].max()
+            xmin = max(xmin - crop_margin, 0)
+            ymin = max(ymin - crop_margin, 0)
+            zmin = max(zmin - crop_margin, 0)
+            xmax = min(xmax + crop_margin, img.shape[0] - 1)
+            ymax = min(ymax + crop_margin, img.shape[1] - 1)
+            zmax = min(zmax + crop_margin, img.shape[2] - 1)
+            bbox = (slice(xmin, xmax + 1),
+                    slice(ymin, ymax + 1),
+                    slice(zmin, zmax + 1))
+            img = img[bbox]
+            if lbl is not None:
+                lbl = lbl[bbox]
+    else:
+        raise ValueError(f"Unknown crop_mode: {crop_mode}")
+
+    # 5) Save as NIfTI, with a simple axis-aligned affine using target spacing
+    #    (assumes standard CT orientation; if your affines are more complex,
+    #     consider using SimpleITK for resampling instead.)
+    affine = np.eye(4, dtype=np.float32)
+    affine[0, 0] = spacing[0]
+    affine[1, 1] = spacing[1]
+    affine[2, 2] = spacing[2]
+
+    out_img_dir.mkdir(parents=True, exist_ok=True)
+    if out_lbl_dir is not None:
+        out_lbl_dir.mkdir(parents=True, exist_ok=True)
+
+    out_img_path = out_img_dir / img_path.name
+    img_out = nib.Nifti1Image(img.astype(np.float32), affine)
+    nib.save(img_out, str(out_img_path))
+
+    if lbl is not None and out_lbl_dir is not None:
+        out_lbl_path = out_lbl_dir / lbl_path.name
+        lbl_out = nib.Nifti1Image(lbl.astype(np.int16), affine)
+        nib.save(lbl_out, str(out_lbl_path))
+
+    print(f"  -> saved image to {out_img_path}")
+    if lbl is not None and out_lbl_dir is not None:
+        print(f"  -> saved label to {out_lbl_path}")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Simple nnUNet-style preprocessing for CT AV segmentation (NIfTI in/out)."
+    )
+    parser.add_argument("--images", type=str, required=True,
+                        help="Directory with input .nii.gz images")
+    parser.add_argument("--labels", type=str, default=None,
+                        help="Directory with input .nii.gz labels (optional)")
+    parser.add_argument("--out_images", type=str, required=True,
+                        help="Output directory for preprocessed images")
+    parser.add_argument("--out_labels", type=str, default=None,
+                        help="Output directory for preprocessed labels (optional)")
+    parser.add_argument(
+        "--target_spacing",
+        type=float,
+        nargs=3,
+        default=[1.0, 1.0, 1.0],
+        help="Target voxel spacing (sx sy sz). Use 1.0 1.0 1.0 or your dataset median."
+    )
+    parser.add_argument(
+        "--clip",
+        type=float,
+        nargs=2,
+        default=None,
+        help="Intensity clip range, e.g. --clip -1000 600 for CT HU."
+    )
+    parser.add_argument(
+        "--zscore",
+        action="store_true",
+        help="Apply z-score normalization after clipping."
+    )
+    parser.add_argument(
+        "--crop_mode",
+        type=str,
+        default="label",
+        choices=["none", "label", "body"],
+        help="Cropping mode: 'label' (crop to label bbox), 'body' (non-zero img), or 'none'."
+    )
+    parser.add_argument(
+        "--crop_margin",
+        type=int,
+        default=10,
+        help="Margin (in voxels) to add around the crop bounding box."
+    )
+
+    args = parser.parse_args()
+
+    images_dir = Path(args.images)
+    labels_dir = Path(args.labels) if args.labels is not None else None
+    out_images_dir = Path(args.out_images)
+    out_labels_dir = Path(args.out_labels) if args.out_labels is not None else None
+
+    if labels_dir is None and args.crop_mode == "label":
+        raise ValueError("crop_mode='label' requires --labels directory.")
+
+    img_files = sorted(
+        [p for p in images_dir.iterdir() if p.suffix in [".nii", ".gz"]]
+    )
+
+    if not img_files:
+        raise RuntimeError(f"No NIfTI files found in {images_dir}")
+
+    for img_path in img_files:
+        stem = img_path.name
+        lbl_path = None
+        if labels_dir is not None:
+            candidate = labels_dir / stem
+            if candidate.exists():
+                lbl_path = candidate
+            else:
+                raise FileNotFoundError(f"Missing label for {img_path.name} at {candidate}")
+
+        preprocess_pair(
+            img_path=img_path,
+            lbl_path=lbl_path,
+            out_img_dir=out_images_dir,
+            out_lbl_dir=out_labels_dir,
+            target_spacing=args.target_spacing,
+            clip_range=args.clip,
+            do_zscore=args.zscore,
+            crop_mode=args.crop_mode,
+            crop_margin=args.crop_margin,
+        )
+
+
+if __name__ == "__main__":
+    main()
