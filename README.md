@@ -1,1 +1,22 @@
-This is our Project 4 GitHub Repository containing our baseline method plus the two new methods to compare to the nnUNet baseline model.
+# Project Overview
+
+This repository focuses on developing a model capable of accurately segmenting and classifying veins and arteries from non-contrast CT images. To support this goal, we leverage **VesselFM**, a pretrained model designed for vessel segmentation across diverse imaging domains.
+
+## Repository Structure
+
+The project is divided into three primary folders, each representing a distinct experimental method:
+
+- **GNN Approach**  
+  A graph neural network designed to leverage vessel topology and connectivity.
+
+- **UNet Approach**  
+  A convolutional neural network architecture optimized for biomedical image segmentation.
+
+- **Modified VesselFM**  
+  A customized version of VesselFM with significant architectural alterations to improve performance for this specific task.
+
+Each folder contains the code and resources required for model development, training, and evaluation.
+
+---
+
+Feel free to contribute or explore the different methodological approaches included in this work.
