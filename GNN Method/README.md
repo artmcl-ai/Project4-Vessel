@@ -1,6 +1,26 @@
 
 This repository contains everything needed to set up the Graph Neural Network (GNN) method for non-contrast artery and vein vessel segmentation.
 
+## 📁 Generate Binary Masks
+
+The script `gt_to_binary_masks.py` convert the GT (Ground Truth) Masks into a binary mask that does not have a vein or artery class. The reason this is
+needed is because to finetune VesselFM the GT data must be binary as VesselFM does segmentation of vessels, but not the classification of arteries and veins.
+
+### Required Path Setup
+In `gt_to_binary_masks.py`, update the following variables:
+
+| Variable | Description |
+|---------|-------------|
+| `in_path  ` | Path to the folder containing your GT masks (multiclass) |
+| `out_path   ` | Path to the folder where you want your GT binary masks |
+
+---
+
+## Usage
+
+```bash
+python gt_to_binary_masks.py
+```
 
 ## 📁 Finetune VesselFM
 
