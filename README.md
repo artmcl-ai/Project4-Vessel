@@ -18,5 +18,3 @@ The project is divided into three primary folders, each representing a distinct 
 Each folder contains the code and resources required for model development, training, and evaluation.
 
 ---
-
-Feel free to contribute or explore the different methodological approaches included in this work.
