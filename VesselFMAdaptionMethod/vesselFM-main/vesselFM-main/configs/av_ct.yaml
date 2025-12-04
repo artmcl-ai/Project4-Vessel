@@ -12,8 +12,8 @@ data:
   clip_hu: null # [-1000, 600]
   zscore: false # True if not preprocessing
   patch_size: [128, 128, 128]
-  samples_per_volume: 6           # Was set to 4
-  min_fg_fraction: 0.03            # hard-example mining, set back to default of 0.02 after testing
+  samples_per_volume: 8           # Was set to 4
+  min_fg_fraction: 0.02            # hard-example mining, set back to default of 0.02 after testing
   labels:
     background: 0
     artery: 1
@@ -21,24 +21,24 @@ data:
 
 model:
   num_classes: 3
-  dropout: 0.2
-  pretrain_ckpt: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/vesselFM_base.pt
+  dropout: 0.1 # Was 0.2
+  pretrain_ckpt: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/vesselfm_finetuned_monai.pt
 
 loss:
   dice_ce_weight: 1.0
   class_weights: [0.05, 0.475, 0.475]   # tweak per dataset imbalance
   use_soft_cldice: true
-  soft_cldice_weight_stage1: 0.5 # Default was 0.2
-  soft_cldice_weight_stage2: 1.0
-  soft_cldice_iters: 3
+  soft_cldice_weight_stage1: 0.3 # Default was 0.2
+  soft_cldice_weight_stage2: 0.6
+  soft_cldice_iters: 2
 
 optim:
   lr_stage1: 3.0e-4 # Was 3.0e-4
-  lr_stage2: 1.0e-4 # Was 3.0e-5
-  weight_decay: 1.0e-5
+  lr_stage2: 3.0e-5 # Was 3.0e-5
+  weight_decay: 5.0e-6 # Was 1.0e-5
   val_cldice_workers: 8 
   epochs_stage1: 100
-  epochs_stage2: 20
+  epochs_stage2: 30
   batch_size: 3
   amp: true
 

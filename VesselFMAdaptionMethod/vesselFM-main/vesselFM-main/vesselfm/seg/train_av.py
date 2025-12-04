@@ -27,7 +27,7 @@ def random_multi_crop_3d(
     lab,
     roi_size,
     num_samples,
-    fg_prob: float = 0.7,
+    fg_prob: float = 0.5,
 ):
     """
     Randomly crop 3D patches from volumes, with optional vessel-biased sampling.
@@ -204,15 +204,33 @@ def eval_epoch(
 ):
     """
     Evaluation on full volumes via sliding-window inference.
-    Dice is computed in the main process.
-    clDice can be parallelized across volumes with multiprocessing.
+
+    Returns:
+      - mean Dice (union A∪V)
+      - mean hard clDice (union A∪V)
+      - mean Dice (artery, class=1)
+      - mean hard clDice (artery)
+      - mean Dice (vein, class=2)
+      - mean hard clDice (vein)
     """
     model.eval()
-    dice_scores = []
-    cldice_scores = []
 
-    # We'll store downsampled numpy masks here for clDice
-    cldice_cases = []  # list of (p_np, g_np)
+    # Dice accumulators
+    dice_union_scores = []
+    dice_art_scores = []
+    dice_vein_scores = []
+
+    # clDice accumulators
+    cldice_union_scores = []
+    cldice_art_scores = []
+    cldice_vein_scores = []
+
+    # Downsampled masks for clDice
+    cldice_cases_union = []
+    cldice_cases_art = []
+    cldice_cases_vein = []
+
+    ds_factor = 1  # Spatial downsample factor for clDice masks
 
     for batch in loader:
         img, lab = batch["image"].to(device), batch["label"].to(device).long()
@@ -232,59 +250,120 @@ def eval_epoch(
 
         B = pred.shape[0]
         for b in range(B):
-            p = (pred[b] > 0)
-            g = (lab[b] > 0)
+            pb = pred[b]
+            gb = lab[b]
 
-            # ---- Dice on full-res mask (still in main process) ----
-            inter = (p & g).sum().float()
-            denom = p.sum().float() + g.sum().float()
-            dice = (2.0 * inter) / (denom + 1e-5)
-            dice_scores.append(dice.item())
+            # UNION OF VESSELS (A∪V)
+            p_union = pb > 0
+            g_union = gb > 0
 
-            # ---- Prepare downsampled masks for clDice ----
+            inter_u = (p_union & g_union).sum().float()
+            denom_u = p_union.sum().float() + g_union.sum().float()
+            if denom_u > 0:
+                dice_u = (2.0 * inter_u) / (denom_u + 1e-5)
+                dice_union_scores.append(dice_u.item())
+
             if cldice_metric is not None:
-                # simple stride-based downsample to reduce memory/compute
-                ds_factor = 2   # try 2 or 4 if still slow/heavy
-                p_small = p[::ds_factor, ::ds_factor, ::ds_factor]
-                g_small = g[::ds_factor, ::ds_factor, ::ds_factor]
+                p_u_small = p_union[::ds_factor, ::ds_factor, ::ds_factor]
+                g_u_small = g_union[::ds_factor, ::ds_factor, ::ds_factor]
+                cldice_cases_union.append(
+                    (
+                        p_u_small.cpu().numpy().astype(bool),
+                        g_u_small.cpu().numpy().astype(bool),
+                    )
+                )
 
-                p_np = p_small.cpu().numpy().astype(bool)
-                g_np = g_small.cpu().numpy().astype(bool)
-                cldice_cases.append((p_np, g_np))
+            # ARTERY (class = 1)
+            g_art = gb == 1
+            if g_art.any():  # Only evaluate arteries if GT has some artery voxels
+                p_art = pb == 1
 
-    if num_metric_workers > 0:
-        print(
-            f"[eval_epoch] Using multiprocessing for clDice: "
-            f"{len(cldice_cases)} volumes, {num_metric_workers} workers",
-            flush=True,
-        )
-        with mp.Pool(processes=num_metric_workers) as pool:
-            results = pool.starmap(
-                _compute_cldice_worker,
-                [(p_np, g_np, cldice_metric) for (p_np, g_np) in cldice_cases],
-            )
+                inter_a = (p_art & g_art).sum().float()
+                denom_a = p_art.sum().float() + g_art.sum().float()
+                if denom_a > 0:
+                    dice_a = (2.0 * inter_a) / (denom_a + 1e-5)
+                    dice_art_scores.append(dice_a.item())
 
-    # ---- Compute clDice (optionally in parallel) ----
-    if cldice_metric is not None and cldice_cases:
+                    if cldice_metric is not None:
+                        p_a_small = p_art[::ds_factor, ::ds_factor, ::ds_factor]
+                        g_a_small = g_art[::ds_factor, ::ds_factor, ::ds_factor]
+                        cldice_cases_art.append(
+                            (
+                                p_a_small.cpu().numpy().astype(bool),
+                                g_a_small.cpu().numpy().astype(bool),
+                            )
+                        )
+
+            # VEIN (class = 2)
+            g_vein = gb == 2
+            if g_vein.any():  # Only evaluate veins if GT has some vein voxels
+                p_vein = pb == 2
+
+                inter_v = (p_vein & g_vein).sum().float()
+                denom_v = p_vein.sum().float() + g_vein.sum().float()
+                if denom_v > 0:
+                    dice_v = (2.0 * inter_v) / (denom_v + 1e-5)
+                    dice_vein_scores.append(dice_v.item())
+
+                    if cldice_metric is not None:
+                        p_v_small = p_vein[::ds_factor, ::ds_factor, ::ds_factor]
+                        g_v_small = g_vein[::ds_factor, ::ds_factor, ::ds_factor]
+                        cldice_cases_vein.append(
+                            (
+                                p_v_small.cpu().numpy().astype(bool),
+                                g_v_small.cpu().numpy().astype(bool),
+                            )
+                        )
+
+    # Helper to compute clDice for a list of (pred, gt) cases
+    def _compute_cldice_list(cases):
+        if cldice_metric is None or not cases:
+            return []
         if num_metric_workers > 0:
-            # true multi-process parallelism; you'll see extra python PIDs
+            print(
+                f"[eval_epoch] clDice over {len(cases)} cases "
+                f"with {num_metric_workers} workers",
+                flush=True,
+            )
             with mp.Pool(processes=num_metric_workers) as pool:
-                results = pool.starmap(
+                return pool.starmap(
                     _compute_cldice_worker,
-                    [(p_np, g_np, cldice_metric) for (p_np, g_np) in cldice_cases],
+                    [(p_np, g_np, cldice_metric) for (p_np, g_np) in cases],
                 )
         else:
-            # fallback: sequential in main process
-            results = [
+            return [
                 _compute_cldice_worker(p_np, g_np, cldice_metric)
-                for (p_np, g_np) in cldice_cases
+                for (p_np, g_np) in cases
             ]
 
-        cldice_scores.extend(results)
+    # Compute clDice for union, artery, vein
+    cldice_union_scores.extend(_compute_cldice_list(cldice_cases_union))
+    cldice_art_scores.extend(_compute_cldice_list(cldice_cases_art))
+    cldice_vein_scores.extend(_compute_cldice_list(cldice_cases_vein))
 
-    mean_dice = float(np.mean(dice_scores)) if dice_scores else 0.0
-    mean_cldice = float(np.mean(cldice_scores)) if cldice_scores else 0.0
-    return mean_dice, mean_cldice
+    # Means (fall back to 0.0 if no samples)
+    mean_dice_union = float(np.mean(dice_union_scores)) if dice_union_scores else 0.0
+    mean_dice_art = float(np.mean(dice_art_scores)) if dice_art_scores else 0.0
+    mean_dice_vein = float(np.mean(dice_vein_scores)) if dice_vein_scores else 0.0
+
+    mean_cldice_union = (
+        float(np.mean(cldice_union_scores)) if cldice_union_scores else 0.0
+    )
+    mean_cldice_art = (
+        float(np.mean(cldice_art_scores)) if cldice_art_scores else 0.0
+    )
+    mean_cldice_vein = (
+        float(np.mean(cldice_vein_scores)) if cldice_vein_scores else 0.0
+    )
+
+    return (
+        mean_dice_union,
+        mean_cldice_union,
+        mean_dice_art,
+        mean_cldice_art,
+        mean_dice_vein,
+        mean_cldice_vein,
+    )
 
 
 
@@ -342,11 +421,17 @@ def make_loader(kind, cfg, train=True):
 
 def main(cfg):
     history = {
-        "epoch": [],
-        "stage": [],
-        "train_loss": [],
-        "val_dice": [],      # Dice on vessel union (A∪V vs BG)
-        "val_clDice": [],    # hard clDice on vessel union (A∪V vs BG)
+    "epoch": [],
+    "stage": [],
+    "train_loss": [],
+    # Union-of-vessels (A∪V)
+    "val_dice": [],
+    "val_clDice": [],
+    # Class-wise metrics
+    "val_dice_artery": [],
+    "val_clDice_artery": [],
+    "val_dice_vein": [],
+    "val_clDice_vein": [],
     }
 
     val_cldice_workers = cfg["optim"].get("val_cldice_workers", 0)
@@ -442,7 +527,14 @@ def main(cfg):
             patch_size=patch_size,
             samples_per_volume=samples_per_volume,
         )
-        va_dice, va_cldice = eval_epoch(
+        (
+            va_dice_union,
+            va_cldice_union,
+            va_dice_art,
+            va_cldice_art,
+            va_dice_vein,
+            va_cldice_vein,
+        ) = eval_epoch(
             model,
             val_loader,
             device,
@@ -454,16 +546,31 @@ def main(cfg):
         history["epoch"].append(epoch + 1)
         history["stage"].append("S1")
         history["train_loss"].append(tr)
-        history["val_dice"].append(va_dice)
-        history["val_clDice"].append(va_cldice)
 
-        if va_cldice > best_cl:
-            best_cl = va_cldice
-            torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_cldice.pt")
+        # union (keep old column names)
+        history["val_dice"].append(va_dice_union)
+        history["val_clDice"].append(va_cldice_union)
+
+        # NEW: per-class
+        history["val_dice_artery"].append(va_dice_art)
+        history["val_clDice_artery"].append(va_cldice_art)
+        history["val_dice_vein"].append(va_dice_vein)
+        history["val_clDice_vein"].append(va_cldice_vein)
+
+        # still pick best model by union clDice (A∪V)
+        if va_cldice_union > best_cl:
+            best_cl = va_cldice_union
+            torch.save(
+                model.state_dict(),
+                f"checkpoints/{cfg['experiment']}_best_cldice.pt",
+            )
 
         print(
             f"[S1][{epoch+1}/{cfg['optim']['epochs_stage1']}] "
-            f"loss={tr:.4f} valDice(A∪V)={va_dice:.4f} valClDice(A∪V)={va_cldice:.4f}"
+            f"loss={tr:.4f} "
+            f"valDice(A∪V)={va_dice_union:.4f} valClDice(A∪V)={va_cldice_union:.4f} "
+            f"valDice(art)={va_dice_art:.4f} valClDice(art)={va_cldice_art:.4f} "
+            f"valDice(vein)={va_dice_vein:.4f} valClDice(vein)={va_cldice_vein:.4f}"
         )
 
     # Stage 2: continue training head with lower LR
@@ -488,7 +595,14 @@ def main(cfg):
             patch_size=patch_size,
             samples_per_volume=samples_per_volume,
         )
-        va_dice, va_cldice = eval_epoch(
+        (
+            va_dice_union,
+            va_cldice_union,
+            va_dice_art,
+            va_cldice_art,
+            va_dice_vein,
+            va_cldice_vein,
+        ) = eval_epoch(
             model,
             val_loader,
             device,
@@ -500,16 +614,27 @@ def main(cfg):
         history["epoch"].append(epoch + 1)
         history["stage"].append("S2")
         history["train_loss"].append(tr)
-        history["val_dice"].append(va_dice)
-        history["val_clDice"].append(va_cldice)
 
-        if va_cldice > best_cl:
-            best_cl = va_cldice
-            torch.save(model.state_dict(), f"checkpoints/{cfg['experiment']}_best_cldice.pt")
+        history["val_dice"].append(va_dice_union)
+        history["val_clDice"].append(va_cldice_union)
+        history["val_dice_artery"].append(va_dice_art)
+        history["val_clDice_artery"].append(va_cldice_art)
+        history["val_dice_vein"].append(va_dice_vein)
+        history["val_clDice_vein"].append(va_cldice_vein)
+
+        if va_cldice_union > best_cl:
+            best_cl = va_cldice_union
+            torch.save(
+                model.state_dict(),
+                f"checkpoints/{cfg['experiment']}_best_cldice.pt",
+            )
 
         print(
             f"[S2][{epoch+1}/{cfg['optim']['epochs_stage2']}] "
-            f"loss={tr:.4f} valDice(A∪V)={va_dice:.4f} valClDice(A∪V)={va_cldice:.4f}"
+            f"loss={tr:.4f} "
+            f"valDice(A∪V)={va_dice_union:.4f} valClDice(A∪V)={va_cldice_union:.4f} "
+            f"valDice(art)={va_dice_art:.4f} valClDice(art)={va_cldice_art:.4f} "
+            f"valDice(vein)={va_dice_vein:.4f} valClDice(vein)={va_cldice_vein:.4f}"
         )
 
     try:
