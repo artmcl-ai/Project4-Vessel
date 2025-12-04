@@ -10,7 +10,7 @@ from multiprocessing import Pool, cpu_count
 
 from .inference import build_model
 from .losses import CompositeLoss
-from .dataio import make_aug_transforms
+from .dataio import make_aug_transforms, NiftiVolume
 from .cldice_utils import SoftCLDiceLoss, hard_cldice
 from torch.utils.data import Dataset
 
@@ -27,7 +27,7 @@ def random_multi_crop_3d(
     lab,
     roi_size,
     num_samples,
-    fg_prob: float = 0.6,
+    fg_prob: float = 0.7,
 ):
     """
     Randomly crop 3D patches from volumes, with optional vessel-biased sampling.
@@ -287,87 +287,57 @@ def eval_epoch(
     return mean_dice, mean_cldice
 
 
-class NPZVolume(Dataset):
-    """
-    Dataset for nnUNet-preprocessed .npz cases.
 
-    Expects each .npz to contain:
-      - 'image': (C, X, Y, Z), float32
-      - 'label': (1, X, Y, Z) or (X, Y, Z), int
-    """
-    def __init__(self, npz_dir, cfg, train=True, transform=None):
-        self.npz_dir = pathlib.Path(npz_dir)
-        self.cfg = cfg
-        self.train = train
-        self.transform = transform
+def make_items_from_dirs(image_dir, label_dir):
+    image_dir = pathlib.Path(image_dir)
+    label_dir = pathlib.Path(label_dir)
+    items = []
 
-        self.files = sorted(self.npz_dir.glob("*.npz"))
-        if not self.files:
-            raise RuntimeError(
-                f"No .npz files found in {self.npz_dir}. "
-                f"Make sure you ran the nnUNet preprocessor and pointed "
-                f"cfg['data']['train_images'] / ['val_images'] to that folder."
-            )
+    for img_path in sorted(image_dir.glob("*.nii*")):
+        img_name = img_path.name
 
-    def __len__(self):
-        return len(self.files)
+        # Handle pattern: image_###.nii.gz -> label_###.nii.gz
+        if img_name.startswith("image_"):
+            lbl_name = "label_" + img_name[len("image_"):]
+        else:
+            # Fallback: same filename if matching names
+            lbl_name = img_name
 
-    def __getitem__(self, idx):
-        fpath = self.files[idx]
-        data = np.load(fpath, allow_pickle=True)
+        lab_path = label_dir / lbl_name
+        if not lab_path.exists():
+            print(f"WARNING: no label for {img_name}, expected {lab_path}")
+            continue
 
-        img = data["image"]  # (C, X, Y, Z)
-        lab = data["label"]  # (1, X, Y, Z) or (X, Y, Z)
+        items.append((str(img_path), str(lab_path)))
 
-        # Convert to torch tensors
-        img = torch.from_numpy(img).float()  # keep (C, D, H, W)
+    if not items:
+        raise RuntimeError(
+            f"No image/label pairs found in {image_dir} and {label_dir}. "
+            f"Check that filenames follow image_### / label_### pattern."
+        )
 
-        # Remove channel dim for labels so train_av's code sees (D, H, W)
-        lab = np.array(lab)
-        if lab.ndim == 4 and lab.shape[0] == 1:
-            lab = lab[0]  # (D, H, W)
-        lab = torch.from_numpy(lab).long()
-
-        sample = {
-            "image": img,
-            "label": lab,
-            "case_id": fpath.stem,
-        }
-
-        if self.transform is not None:
-            sample = self.transform(sample)
-
-        return sample
-
+    return items
 
 
 def make_loader(kind, cfg, train=True):
-    """
-    Loader for nnUNet-preprocessed .npz volumes.
-
-    cfg["data"]["train_images"] and cfg["data"]["val_images"] should point
-    to folders that contain the .npz files produced by the modified
-    DefaultPreprocessor (image+label+properties).
-    """
     if kind == "train":
-        npz_dir = cfg["data"]["train_images"]
+        items = make_items_from_dirs(cfg["data"]["train_images"],
+                                     cfg["data"]["train_labels"])
     else:
-        npz_dir = cfg["data"]["val_images"]
+        items = make_items_from_dirs(cfg["data"]["val_images"],
+                                     cfg["data"]["val_labels"])
 
+    ds = NiftiVolume(items, cfg, train=train)
     aug = make_aug_transforms(cfg, train=train)
+    ds.set_transform(aug)
 
-    ds = NPZVolume(npz_dir, cfg, train=train, transform=aug)
-
-    # IMPORTANT: volumes have variable shapes, so we must use batch_size=1
-    # and rely on random_multi_crop_3d for "effective" batch size.
     return DataLoader(
         ds,
-        batch_size=1,
+        batch_size=cfg["optim"]["batch_size"],
         shuffle=train,
-        num_workers=8,   # or fewer if SCC complains
+        num_workers=cfg["data"].get("num_workers", 8),
         pin_memory=True,
     )
-
 
 
 def main(cfg):
@@ -385,9 +355,9 @@ def main(cfg):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(cfg["seed"])
 
-    # Patch-based training settings from YAML (av_ct.yaml)
-    patch_size = cfg["data"].get("patch_size", [96, 96, 96])
-    samples_per_volume = cfg["data"].get("samples_per_volume", 1)
+    # NiftiVolume already handles patch sampling; disable extra cropping here
+    patch_size = None
+    samples_per_volume = 1
 
     # Data
     train_loader = make_loader("train", cfg, train=True)
@@ -460,7 +430,12 @@ def main(cfg):
     best_cl = -1.0
     for epoch in range(cfg["optim"]["epochs_stage1"]):
         tr = one_epoch(
-            model, train_loader, loss_fn, opt, scaler, device,
+            model,
+            train_loader,
+            loss_fn,
+            opt,
+            scaler,
+            device,
             amp=cfg["optim"]["amp"],
             cldice_loss_fn=cldice_loss_fn,
             cldice_weight=cldice_weight_s1,
@@ -501,7 +476,12 @@ def main(cfg):
 
     for epoch in range(cfg["optim"]["epochs_stage2"]):
         tr = one_epoch(
-            model, train_loader, loss_fn, opt, scaler, device,
+            model,
+            train_loader,
+            loss_fn,
+            opt,
+            scaler,
+            device,
             amp=cfg["optim"]["amp"],
             cldice_loss_fn=cldice_loss_fn,
             cldice_weight=cldice_weight_s2,

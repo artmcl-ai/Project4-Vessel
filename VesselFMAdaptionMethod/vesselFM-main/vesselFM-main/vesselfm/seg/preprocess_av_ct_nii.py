@@ -246,21 +246,49 @@ def main():
         raise ValueError("crop_mode='label' requires --labels directory.")
 
     img_files = sorted(
-        [p for p in images_dir.iterdir() if p.suffix in [".nii", ".gz"]]
+        [
+            p for p in images_dir.iterdir()
+            if p.is_file() and (p.name.endswith(".nii") or p.name.endswith(".nii.gz"))
+        ]
     )
 
     if not img_files:
         raise RuntimeError(f"No NIfTI files found in {images_dir}")
 
     for img_path in img_files:
-        stem = img_path.name
+        # Strip extension(s) to get a clean base name, e.g. "image_001"
+        img_name = img_path.name  # e.g. "image_001.nii.gz"
+        base = img_name
+        if base.endswith(".nii.gz"):
+            base = base[:-7]
+        elif base.endswith(".nii"):
+            base = base[:-4]
+
         lbl_path = None
         if labels_dir is not None:
-            candidate = labels_dir / stem
-            if candidate.exists():
-                lbl_path = candidate
-            else:
-                raise FileNotFoundError(f"Missing label for {img_path.name} at {candidate}")
+            candidates = []
+
+            # 1) Same base name in labels dir (image_001 → image_001)
+            candidates.append(labels_dir / (base + ".nii.gz"))
+            candidates.append(labels_dir / (base + ".nii"))
+
+            # 2) image_001 → label_001 pattern
+            if base.startswith("image_"):
+                idx = base[len("image_"):]  # "001"
+                candidates.append(labels_dir / f"label_{idx}.nii.gz")
+                candidates.append(labels_dir / f"label_{idx}.nii")
+
+            # Pick the first existing candidate
+            for cand in candidates:
+                if cand.exists():
+                    lbl_path = cand
+                    break
+
+            if lbl_path is None:
+                raise FileNotFoundError(
+                    f"Missing label for {img_path.name}. "
+                    f"Tried: {[str(c) for c in candidates]}"
+                )
 
         preprocess_pair(
             img_path=img_path,

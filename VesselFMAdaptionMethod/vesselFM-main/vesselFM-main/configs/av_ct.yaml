@@ -3,16 +3,16 @@ experiment: av_ct
 seed: 42
 
 data:
-  train_images: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/nnunet_npz_train
-  train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/nnunet_npz_train
-  val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/nnunet_npz_val
-  val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/nnunet_npz_val
+  train_images: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesTr_pre
+  train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsTr_pre
+  val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal_pre
+  val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal_pre
   preprocessed: true
   spacing: null # [1.0, 1.0, 1.0]
   clip_hu: null # [-1000, 600]
   zscore: false # True if not preprocessing
-  patch_size: [96, 96, 96]
-  samples_per_volume: 4           # Was set to 4
+  patch_size: [128, 128, 128]
+  samples_per_volume: 6           # Was set to 4
   min_fg_fraction: 0.03            # hard-example mining, set back to default of 0.02 after testing
   labels:
     background: 0
@@ -22,7 +22,7 @@ data:
 model:
   num_classes: 3
   dropout: 0.2
-  pretrain_ckpt: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/vesselfm_finetuned_monai.pt
+  pretrain_ckpt: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/vesselFM_base.pt
 
 loss:
   dice_ce_weight: 1.0
@@ -39,7 +39,7 @@ optim:
   val_cldice_workers: 8 
   epochs_stage1: 100
   epochs_stage2: 20
-  batch_size: 1
+  batch_size: 3
   amp: true
 
 augment:
