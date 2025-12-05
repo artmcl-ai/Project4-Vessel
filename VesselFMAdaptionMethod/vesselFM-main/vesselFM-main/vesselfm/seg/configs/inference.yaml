@@ -16,10 +16,10 @@ round_to: 2
 
 # model & ckpt
 device: cuda:0
-ckpt_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/av_ct_best.pt
+ckpt_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/av_ct_best_cldice.pt
 
 # sliding window inferer
-batch_size: 1
+batch_size: 3
 patch_size: [128, 128, 128]
 overlap: 0.5
 mode: "constant"

@@ -98,20 +98,16 @@ class NiftiVolume(Dataset):
         return image, label
 
     def _sample_patch(self, image, label):
-        """
-        Randomly sample a 3D patch. If min_fg_fraction > 0, try up to max_tries
-        to find a patch with enough vessel foreground; otherwise, fall back to
-        the last sampled patch.
-        """
         D, H, W = image.shape
         pD, pH, pW = self.cfg["data"]["patch_size"]
         min_fg = self.cfg["data"].get("min_fg_fraction", 0.0)
-        max_tries = 32  # safety cap
+        art_prob = self.cfg["data"].get("artery_patch_prob", 0.0)
+        min_art = self.cfg["data"].get("min_artery_fraction", 0.0)
+        max_tries = 32
 
-        # Ensure patch size does not exceed image size
-        pD = min(pD, D)
-        pH = min(pH, H)
-        pW = min(pW, W)
+        pD = min(pD, D); pH = min(pH, H); pW = min(pW, W)
+
+        want_artery = (np.random.rand() < art_prob)
 
         fallback_img = None
         fallback_lab = None
@@ -127,15 +123,22 @@ class NiftiVolume(Dataset):
             if fallback_img is None:
                 fallback_img, fallback_lab = img_patch, lab_patch
 
-            if min_fg <= 0.0:
+            if min_fg <= 0.0 and not want_artery:
                 return img_patch, lab_patch
 
             fg_fraction = (lab_patch > 0).mean()
-            if fg_fraction >= min_fg:
-                return img_patch, lab_patch
+            art_fraction = (lab_patch == 1).mean()
 
-        # If we didn't find a "good" patch after max_tries, just return fallback
+            if want_artery:
+                if art_fraction >= min_art:
+                    return img_patch, lab_patch
+            else:
+                if fg_fraction >= min_fg:
+                    return img_patch, lab_patch
+
+        # fallback if we fail max_tries
         return fallback_img, fallback_lab
+
 
     def _augment(self, image, label):
         """Very lightweight spatial augmentation (flips)."""
@@ -166,9 +169,11 @@ class NiftiVolume(Dataset):
         # Load and preprocess volume
         image, label = self._load_image_label(vol_idx)
 
-        # Sample patch + augment (if training)
-        image, label = self._sample_patch(image, label)
-        image, label = self._augment(image, label)
+        # For training: sample patch + augment
+        if self.train:
+            image, label = self._sample_patch(image, label)
+            image, label = self._augment(image, label)
+        # For validation: use full volume (no patching, no aug)
 
         sample = {"image": image, "label": label}
 

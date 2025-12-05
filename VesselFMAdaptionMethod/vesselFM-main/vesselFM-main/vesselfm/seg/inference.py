@@ -5,6 +5,7 @@ import warnings
 from pathlib import Path
 
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 import hydra
 from hydra import initialize_config_dir, compose
@@ -12,6 +13,7 @@ from hydra.core.global_hydra import GlobalHydra
 
 import numpy as np
 import json
+import nibabel as nib
 from .cldice_utils import hard_cldice
 from tqdm import tqdm
 from huggingface_hub import hf_hub_download
@@ -33,7 +35,7 @@ logger = logging.getLogger(__name__)
 def build_model(num_classes=3, dropout=0.0):
     # Load inference config to get the same model definition with ckpt_path
     here = Path(__file__).resolve().parent
-    config_dir = here / "configs"  # -> vesselfm/seg/configs
+    config_dir = here / "configs"
 
     # Compose the full inference config
     GlobalHydra.instance().clear()
@@ -101,6 +103,11 @@ def build_model(num_classes=3, dropout=0.0):
         f"{len(missing)} missing and {len(unexpected)} unexpected keys "
         f"(expected when swapping to a 3-class head)."
     )
+
+    # Add an explicit vessel head as a second physical head.
+    if not hasattr(model, "vessel_head"):
+        logger.info("[build_model] Adding 1x1x1 vessel_head on top of A/V logits.")
+        model.vessel_head = nn.Conv3d(num_classes, 1, kernel_size=1)
 
     return model
 
@@ -322,20 +329,33 @@ def main(cfg):
                     cleaned[cm] = c
                 label = cleaned
 
-            # Save final labelmap
-            save_writer.write_seg(
-                label,
-                output_folder / f"{image_path.name.split('.')[0]}_{cfg.file_app}pred.{file_ending}",
+            # Label is a numpy array (D, H, W), int or bool
+            label_np = label.astype(np.uint8)
+
+            # Load the original CT as reference for affine + header
+            ref_nii = nib.load(str(image_path))
+
+            pred_nii = nib.Nifti1Image(
+                label_np,
+                affine=ref_nii.affine,
+                header=ref_nii.header,
             )
 
-            # Metrics (if GT masks available)
+            # Make sure sform/qform are consistent
+            pred_nii.set_sform(ref_nii.get_sform(), code=ref_nii.get_sform(coded=True)[1] if ref_nii.get_sform(coded=True)[1] else 1)
+            pred_nii.set_qform(ref_nii.get_qform(), code=ref_nii.get_qform(coded=True)[1] if ref_nii.get_qform(coded=True)[1] else 1)
+
+            out_path = output_folder / f"{image_path.name.split('.')[0]}_{cfg.file_app}pred.nii.gz"
+            nib.save(pred_nii, str(out_path))
+
+            # Metrics if GT masks are available
             if mask_paths is not None and mask is not None:
-                # ----------------------------------------------------------
-                # label: (D, H, W) with {0:bg, 1:artery, 2:vein}
-                # mask:  torch.bool, same spatial shape, True = vessel (A∪V)
-                # ----------------------------------------------------------
-                # Predicted union-of-vessels (A ∪ V)
-                union_pred = label > 0                       # numpy bool, (D,H,W)
+                '''
+                Label: (D, H, W) with {0:bg, 1:artery, 2:vein}
+                Mask:  torch.bool, same spatial shape, True = vessel (A∪V)
+                Predicted union-of-vessels (A ∪ V)
+                '''
+                union_pred = label > 0                       # Numpy bool, (D,H,W)
                 # Ground-truth union-of-vessels
                 union_gt = mask.cpu().numpy().astype(bool)   # (D,H,W)
 

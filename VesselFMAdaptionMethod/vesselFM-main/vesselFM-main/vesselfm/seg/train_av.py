@@ -91,35 +91,85 @@ def _compute_cldice_worker(p_np, g_np, cldice_metric):
 
 def freeze_backbone(model):
     """
-    For MONAI DynUNet:
-      - freeze all encoder/decoder weights
-      - leave only the final_conv (classification head) trainable
+    Freeze encoder/decoder; keep classification heads trainable:
+      - output_block (3-class A/V head)
+      - deep supervision heads when present
+      - vessel_head (1-channel vessel head)
     """
     for name, p in model.named_parameters():
-        if "output_block" in name or "deep_supervision_heads" in name:
-            p.requires_grad = True    # head stays trainable
+        if (
+            "output_block" in name
+            or "deep_supervision_heads" in name
+            or "vessel_head" in name
+        ):
+            p.requires_grad = True
         else:
-            p.requires_grad = False   # backbone frozen
+            p.requires_grad = False
 
 
 def unfreeze_encoder_tail(model, n_stages=2):
     """
-    To respect the no backbone retrain constraint, keep this as a no-op.
-    Stage 2 just continues training the head with a lower LR.
+    Stage 2: keep heads trainable; optionally unfreeze last decoder stage.
     """
-    # keep head trainable
+    # Heads
     if hasattr(model, "output_block"):
         for p in model.output_block.parameters():
             p.requires_grad = True
     if hasattr(model, "deep_supervision_heads"):
         for p in model.deep_supervision_heads.parameters():
             p.requires_grad = True
+    if hasattr(model, "vessel_head"):
+        for p in model.vessel_head.parameters():
+            p.requires_grad = True
 
-    # example for DynUNet: unfreeze last decoder level
+    # Optionally: last decoder level
     if hasattr(model, "decoder"):
-        # decoder is typically a nn.ModuleList of stages
         for p in model.decoder[-1].parameters():
             p.requires_grad = True
+
+
+def av_head_loss(logits, lab, class_weights_av=None):
+    """
+    Extra artery/vein classification loss ("second head") using the same logits.
+
+    logits: (B, 3, D, H, W), channels [bg, artery, vein]
+    lab:    (B, D, H, W) with values {0,1,2}
+    """
+    # Only compute on vessel voxels
+    mask = lab > 0  # (B, D, H, W)
+    if not mask.any():
+        # no vessel voxels in this batch -> no A/V loss
+        return logits.new_tensor(0.0)
+
+    # Restrict logits to artery/vein channels
+    logits_av = logits[:, 1:3, ...]              # (B, 2, D, H, W)
+
+    # Flatten over spatial dims, keep only masked voxels
+    # (B,2,D,H,W) -> (B,D,H,W,2) -> (N,2)
+    logits_flat = logits_av.permute(0, 2, 3, 4, 1)[mask]  # (N, 2)
+
+    # Targets: map {artery=1, vein=2} -> {0,1}
+    targets_flat = (lab[mask] - 1).long()                 # (N,), values 0 or 1
+
+    # Optional A/V class weights
+    weight = None
+    if class_weights_av is not None:
+        weight = logits_flat.new_tensor(class_weights_av, dtype=torch.float32)
+
+    # Cross-entropy on artery vs vein
+    ce = F.cross_entropy(logits_flat, targets_flat, weight=weight)
+
+    # Dice part (2-class) on the same voxels
+    probs_flat = F.softmax(logits_flat, dim=1)  # (N, 2)
+    target_onehot = torch.zeros_like(probs_flat)
+    target_onehot.scatter_(1, targets_flat.unsqueeze(1), 1.0)  # one-hot GT
+
+    intersection = (probs_flat * target_onehot).sum(dim=0)   # (2,)
+    denom = probs_flat.sum(dim=0) + target_onehot.sum(dim=0) + 1e-5
+    dice_per_class = 2.0 * intersection / denom
+    dice_loss = 1.0 - dice_per_class.mean()
+
+    return ce + dice_loss
 
 
 def one_epoch(
@@ -131,10 +181,16 @@ def one_epoch(
     device,
     amp=True,
     cldice_loss_fn=None,
-    cldice_weight: float = 0.0,
+    cldice_weight: float = 0.0,        # union-of-vessels
     patch_size=None,
     samples_per_volume: int = 1,
+    av_head_weight: float = 0.0,
+    av_class_weights=None,
+    cldice_weight_art: float = 0.0,
+    cldice_weight_vein: float = 0.0,
+    vessel_consistency_weight: float = 0.0,
 ):
+
     model.train()
     running = []
 
@@ -153,7 +209,7 @@ def one_epoch(
             )
 
         with autocast(enabled=amp):
-            logits = model(img)  # (B*,3,pD,pH,pW)
+            logits = model(img)
 
             # Ensure labels are in [0, num_classes-1]
             n_classes = logits.shape[1]
@@ -165,18 +221,55 @@ def one_epoch(
             base_loss = loss_fn(logits, lab)
             loss = base_loss
 
-            # Soft clDice on union-of-vessels (A ∪ V) if enabled
+            # Shared probabilities
+            probs = F.softmax(logits, dim=1)
+
+            # Vessel head / union-of-vessels clDice
             if cldice_loss_fn is not None and cldice_weight > 0.0:
-                probs = F.softmax(logits, dim=1)  # (B*,3,...)
+                vessel_lab = (lab > 0).long()                 # (B*,D,H,W)
+                vessel_gt  = vessel_lab.unsqueeze(1).float()  # (B*,1,D,H,W)
 
-                vessel_lab = (lab > 0).long()           # (B*,D,H,W)
-                vessel_gt = vessel_lab.unsqueeze(1).float()  # (B*,1,D,H,W)
+                if hasattr(model, "vessel_head"):
+                    vessel_logits = model.vessel_head(logits)
+                    vessel_probs  = torch.sigmoid(vessel_logits)
+                else:
+                    vessel_probs = probs[:, 1:3].sum(dim=1, keepdim=True)
 
-                vessel_probs = probs[:, 1:3].sum(dim=1, keepdim=True)
                 vessel_probs = vessel_probs.clamp(0.0, 1.0)
+                cl_loss_union = cldice_loss_fn(vessel_gt, vessel_probs)
+                loss = loss + cldice_weight * cl_loss_union
 
-                cl_loss = cldice_loss_fn(vessel_gt, vessel_probs)
-                loss = loss + cldice_weight * cl_loss
+            # Per-class clDice for artery and vein
+            if cldice_loss_fn is not None and (cldice_weight_art > 0.0 or cldice_weight_vein > 0.0):
+                # Artery = class 1
+                if cldice_weight_art > 0.0:
+                    gt_art = (lab == 1).float().unsqueeze(1)
+                    if gt_art.sum() > 0:
+                        pr_art = probs[:, 1:2, ...]
+                        cl_art = cldice_loss_fn(gt_art, pr_art)
+                        loss = loss + cldice_weight_art * cl_art
+
+                # Vein = class 2
+                if cldice_weight_vein > 0.0:
+                    gt_vein = (lab == 2).float().unsqueeze(1)
+                    if gt_vein.sum() > 0:
+                        pr_vein = probs[:, 2:3, ...]
+                        cl_vein = cldice_loss_fn(gt_vein, pr_vein)
+                        loss = loss + cldice_weight_vein * cl_vein
+
+            # Extra A/V classification loss (on vessel voxels)
+            if av_head_weight > 0.0:
+                av_loss = av_head_loss(logits, lab, class_weights_av=av_class_weights)
+                loss = loss + av_head_weight * av_loss
+
+            # Vessel_head vs A/V union
+            if vessel_consistency_weight > 0.0 and hasattr(model, "vessel_head"):
+                union_av = probs[:, 1:3, ...].sum(dim=1, keepdim=True)  # (B*,1,...)
+                vessel_logits = model.vessel_head(logits)
+                vessel_probs  = torch.sigmoid(vessel_logits)
+
+                cons_loss = F.mse_loss(vessel_probs, union_av)
+                loss = loss + vessel_consistency_weight * cons_loss
 
         scaler.scale(loss).backward()
         scaler.step(opt)
@@ -400,19 +493,25 @@ def make_items_from_dirs(image_dir, label_dir):
 
 def make_loader(kind, cfg, train=True):
     if kind == "train":
-        items = make_items_from_dirs(cfg["data"]["train_images"],
-                                     cfg["data"]["train_labels"])
+        items = make_items_from_dirs(
+            cfg["data"]["train_images"],
+            cfg["data"]["train_labels"],
+        )
     else:
-        items = make_items_from_dirs(cfg["data"]["val_images"],
-                                     cfg["data"]["val_labels"])
+        items = make_items_from_dirs(
+            cfg["data"]["val_images"],
+            cfg["data"]["val_labels"],
+        )
 
     ds = NiftiVolume(items, cfg, train=train)
     aug = make_aug_transforms(cfg, train=train)
     ds.set_transform(aug)
 
+    batch_size = cfg["optim"]["batch_size"] if train else 1
+
     return DataLoader(
         ds,
-        batch_size=cfg["optim"]["batch_size"],
+        batch_size=batch_size,
         shuffle=train,
         num_workers=cfg["data"].get("num_workers", 8),
         pin_memory=True,
@@ -440,13 +539,14 @@ def main(cfg):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     set_seed(cfg["seed"])
 
-    # NiftiVolume already handles patch sampling; disable extra cropping here
-    patch_size = None
+    # NiftiVolume handles patch sampling for training.
+    train_patch_size = None          # no extra random_multi_crop_3d
+    eval_patch_size  = cfg["data"]["patch_size"]  # use for sliding window
     samples_per_volume = 1
 
     # Data
     train_loader = make_loader("train", cfg, train=True)
-    val_loader = make_loader("val", cfg, train=False)
+    val_loader   = make_loader("val", cfg, train=False)
 
     # Debug: grab one batch to make sure loader works
     first_batch = next(iter(train_loader))
@@ -482,6 +582,9 @@ def main(cfg):
 
     model.to(device)
 
+    # Extra A/V classification head loss hyperparams
+    av_head_weight = cfg["loss"].get("av_head_weight", 1.0)
+    av_class_weights = cfg["loss"].get("av_class_weights", [1.0, 1.0])
 
     # Loss (Dice+CE etc.)
     loss_fn = CompositeLoss(
@@ -495,6 +598,11 @@ def main(cfg):
     use_soft = cfg["loss"].get("use_soft_cldice", False)
     cldice_weight_s1 = cfg["loss"].get("soft_cldice_weight_stage1", 0.0) if use_soft else 0.0
     cldice_weight_s2 = cfg["loss"].get("soft_cldice_weight_stage2", 0.0) if use_soft else 0.0
+
+    # Per-class clDice weights + consistency
+    cldice_weight_art   = cfg["loss"].get("soft_cldice_weight_art", 0.0)
+    cldice_weight_vein  = cfg["loss"].get("soft_cldice_weight_vein", 0.0)
+    vessel_consistency_weight = cfg["loss"].get("vessel_consistency_weight", 0.0)
 
     cldice_loss_fn = None
     if (cldice_weight_s1 > 0.0) or (cldice_weight_s2 > 0.0):
@@ -524,9 +632,15 @@ def main(cfg):
             amp=cfg["optim"]["amp"],
             cldice_loss_fn=cldice_loss_fn,
             cldice_weight=cldice_weight_s1,
-            patch_size=patch_size,
+            patch_size=train_patch_size,
             samples_per_volume=samples_per_volume,
+            av_head_weight=av_head_weight,
+            av_class_weights=av_class_weights,
+            cldice_weight_art=cldice_weight_art,
+            cldice_weight_vein=cldice_weight_vein,
+            vessel_consistency_weight=vessel_consistency_weight,
         )
+
         (
             va_dice_union,
             va_cldice_union,
@@ -539,7 +653,7 @@ def main(cfg):
             val_loader,
             device,
             cldice_metric=hard_cldice,
-            patch_size=patch_size,
+            patch_size=eval_patch_size,
             num_metric_workers=val_cldice_workers,
         )
 
@@ -592,8 +706,13 @@ def main(cfg):
             amp=cfg["optim"]["amp"],
             cldice_loss_fn=cldice_loss_fn,
             cldice_weight=cldice_weight_s2,
-            patch_size=patch_size,
+            patch_size=train_patch_size,
             samples_per_volume=samples_per_volume,
+            av_head_weight=av_head_weight,
+            av_class_weights=av_class_weights,
+            cldice_weight_art=cldice_weight_art,
+            cldice_weight_vein=cldice_weight_vein,
+            vessel_consistency_weight=vessel_consistency_weight,
         )
         (
             va_dice_union,
@@ -607,7 +726,7 @@ def main(cfg):
             val_loader,
             device,
             cldice_metric=hard_cldice,
-            patch_size=patch_size,
+            patch_size=eval_patch_size,
             num_metric_workers=val_cldice_workers,
         )
 
