@@ -11,7 +11,7 @@ from scipy.ndimage import zoom
 
 def resample_to_spacing(data, src_spacing, tgt_spacing, order):
     """
-    data: np.ndarray with shape (X, Y, Z) or (X, Y, Z, C)
+    Data: np.ndarray with shape (X, Y, Z) or (X, Y, Z, C)
     src_spacing, tgt_spacing: iterable of length 3
     order: interpolation order (3 = cubic for image, 0 = nearest for label)
     """
@@ -32,7 +32,7 @@ def resample_to_spacing(data, src_spacing, tgt_spacing, order):
 
 def compute_label_bbox(label, margin=0):
     """
-    Compute bounding box of non-zero labels, with margin (in voxels).
+    Compute bounding box of non-zero labels, with margin in voxels.
     label: np.ndarray (X, Y, Z) integer labels
     returns: slices or None if no foreground
     """
@@ -59,7 +59,7 @@ def compute_label_bbox(label, margin=0):
 
 def zscore_normalize(img, mask=None, eps=1e-8):
     """
-    Z-score normalization with optional mask (e.g., non-zero voxels).
+    Z-score normalization with mask.
     img: np.ndarray float
     mask: boolean array or None
     """
@@ -76,6 +76,31 @@ def zscore_normalize(img, mask=None, eps=1e-8):
     return img
 
 
+def percentile_normalize(img, p_lo=0.5, p_hi=99.5, mask=None, eps=1e-8):
+    """
+    Map intensities between [p_lo, p_hi] percentiles to [0,1].
+    Everything below p_lo goes to 0, above p_hi to 1.
+    Usually mask = (img != 0) to ignore the air background.
+    """
+    if mask is None:
+        mask = np.ones_like(img, dtype=bool)
+
+    vals = img[mask]
+    if vals.size == 0:
+        return img
+
+    lo = np.percentile(vals, p_lo)
+    hi = np.percentile(vals, p_hi)
+
+    if hi - lo < eps:
+        # almost constant volume, nothing sensible to do
+        return img
+
+    img = np.clip(img, lo, hi)
+    img = (img - lo) / (hi - lo + eps)
+    return img
+
+
 def preprocess_pair(
     img_path,
     lbl_path,
@@ -86,6 +111,8 @@ def preprocess_pair(
     do_zscore=False,
     crop_mode="label",
     crop_margin=10,
+    percentile_norm=False,
+    percentile_range=(0.5, 99.5),
 ):
     """
     Preprocess one image+label pair and save as .nii.gz.
@@ -99,7 +126,7 @@ def preprocess_pair(
     img = img_nii.get_fdata().astype(np.float32)
     src_spacing = img_nii.header.get_zooms()[:3]
 
-    # labels (if provided)
+    # Labels
     if lbl_path is not None:
         lbl_nii = nib.load(str(lbl_path))
         lbl = lbl_nii.get_fdata().astype(np.int16)
@@ -107,7 +134,7 @@ def preprocess_pair(
         lbl_nii = None
         lbl = None
 
-    # 1) Resample image (and label) to target spacing
+    # Resample image and label to target spacing
     if target_spacing is not None:
         img = resample_to_spacing(img, src_spacing, target_spacing, order=3)
         if lbl is not None:
@@ -116,22 +143,32 @@ def preprocess_pair(
     else:
         spacing = src_spacing
 
-    # 2) Intensity clipping
+    # Intensity normalisation
+    # HU clipping
     if clip_range is not None:
         lo, hi = clip_range
-        img = np.clip(img, lo, hi)
+    else:
+        lo, hi = -1000.0, 600.0  # default chest CT window
 
-    # 3) Z-score normalization (on non-zero or all voxels)
-    if do_zscore:
-        if lbl is not None:
-            # Use body/vessel region if you prefer; here: non-zero intensity
-            mask = img != 0
-        else:
-            mask = img != 0
+    img = np.clip(img, lo, hi)
+
+    # Choose one of: percentile mapping, z-score, or simple [lo,hi] to [0,1]
+    if percentile_norm:
+        # Ignore pure-air voxels when computing percentiles
+        mask = img != lo
+        p_lo, p_hi = percentile_range
+        img = percentile_normalize(img, p_lo=p_lo, p_hi=p_hi, mask=mask)
+    elif do_zscore:
+        mask = img != lo
         img = zscore_normalize(img, mask=mask)
+    else:
+        # Simple linear windowing [lo,hi] to [0,1]
+        img = (img - lo) / (hi - lo + 1e-8)
 
-    # 4) Cropping
-    # For training, you usually want crop_mode="label" to focus on vessel region.
+    img = img.astype(np.float32)
+
+    # Cropping
+
     # For inference, use crop_mode="none" so volume size stays global.
     if crop_mode == "label" and lbl is not None:
         bbox = compute_label_bbox(lbl, margin=crop_margin)
@@ -139,10 +176,10 @@ def preprocess_pair(
             img = img[bbox]
             lbl = lbl[bbox]
     elif crop_mode == "none":
-        # no cropping
+        # No cropping
         pass
     elif crop_mode == "body":
-        # simple body mask (non-zero intensities)
+        # Simple body mask
         mask = img != 0
         if np.any(mask):
             coords = np.where(mask)
@@ -164,9 +201,6 @@ def preprocess_pair(
     else:
         raise ValueError(f"Unknown crop_mode: {crop_mode}")
 
-    # 5) Save as NIfTI, with a simple axis-aligned affine using target spacing
-    #    (assumes standard CT orientation; if your affines are more complex,
-    #     consider using SimpleITK for resampling instead.)
     affine = np.eye(4, dtype=np.float32)
     affine[0, 0] = spacing[0]
     affine[1, 1] = spacing[1]
@@ -192,7 +226,7 @@ def preprocess_pair(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Simple nnUNet-style preprocessing for CT AV segmentation (NIfTI in/out)."
+        description="Preprocessing for VesselFM Adaptation"
     )
     parser.add_argument("--images", type=str, required=True,
                         help="Directory with input .nii.gz images")
@@ -207,14 +241,26 @@ def main():
         type=float,
         nargs=3,
         default=[1.0, 1.0, 1.0],
-        help="Target voxel spacing (sx sy sz). Use 1.0 1.0 1.0 or your dataset median."
+        help="Target voxel spacing (sx sy sz). Use 1.0 1.0 1.0 or dataset median."
+    )
+    parser.add_argument(
+        "--percentile_norm",
+        action="store_true",
+        help="Use per-volume percentile mapping after HU clipping instead of plain [lo,hi]->[0,1] or z-score."
+    )
+    parser.add_argument(
+        "--percentile_range",
+        type=float,
+        nargs=2,
+        default=[0.5, 99.5],
+        help="Lower/upper percentiles for --percentile_norm (default 0.5 99.5)."
     )
     parser.add_argument(
         "--clip",
         type=float,
         nargs=2,
         default=None,
-        help="Intensity clip range, e.g. --clip -1000 600 for CT HU."
+        help="Intensity clip range, --clip -1000 600 for CT HU."
     )
     parser.add_argument(
         "--zscore",
@@ -256,8 +302,8 @@ def main():
         raise RuntimeError(f"No NIfTI files found in {images_dir}")
 
     for img_path in img_files:
-        # Strip extension(s) to get a clean base name, e.g. "image_001"
-        img_name = img_path.name  # e.g. "image_001.nii.gz"
+        # Strip extension to get a clean base name image_001
+        img_name = img_path.name
         base = img_name
         if base.endswith(".nii.gz"):
             base = base[:-7]
@@ -268,11 +314,11 @@ def main():
         if labels_dir is not None:
             candidates = []
 
-            # 1) Same base name in labels dir (image_001 → image_001)
+            # 1) Same base name in labels dir
             candidates.append(labels_dir / (base + ".nii.gz"))
             candidates.append(labels_dir / (base + ".nii"))
 
-            # 2) image_001 → label_001 pattern
+            # 2) image_001 to label_001 pattern
             if base.startswith("image_"):
                 idx = base[len("image_"):]  # "001"
                 candidates.append(labels_dir / f"label_{idx}.nii.gz")
@@ -297,10 +343,14 @@ def main():
             out_lbl_dir=out_labels_dir,
             target_spacing=args.target_spacing,
             clip_range=args.clip,
-            do_zscore=args.zscore,
+            # Don't z-score if doing percentile_norm
+            do_zscore=args.zscore and not args.percentile_norm,
             crop_mode=args.crop_mode,
             crop_margin=args.crop_margin,
+            percentile_norm=args.percentile_norm,
+            percentile_range=tuple(args.percentile_range),
         )
+
 
 
 if __name__ == "__main__":

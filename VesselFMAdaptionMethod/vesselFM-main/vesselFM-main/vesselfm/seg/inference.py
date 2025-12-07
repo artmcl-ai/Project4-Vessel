@@ -280,16 +280,16 @@ def main(cfg):
             desc="Processing images.",
         ):
             preds = []  # per-scale logits
-            mask = None
+            mask_np = None
 
             for scale in cfg.tta.scales:
                 # read image (and mask if available)
                 image_np = image_reader_writer.read_images(image_path)[0].astype(np.float32)
                 image = transforms(image_np)[None].to(device)
 
-                if mask_paths is not None:
-                    mask_np = image_reader_writer.read_images(mask_paths[idx])[0]
-                    mask = torch.tensor(mask_np).bool()
+                if mask_paths is not None and mask_np is None:
+                    # Load 3-class GT: 0=bg,1=artery,2=vein
+                    mask_np = image_reader_writer.read_images(mask_paths[idx])[0].astype(np.int16)
 
                 # TTA intensity transforms
                 if cfg.tta.invert:
@@ -329,16 +329,41 @@ def main(cfg):
                     cleaned[cm] = c
                 label = cleaned
 
-            # Label is a numpy array (D, H, W), int or bool
+            # Label is a numpy array (D, H, W) in model/reader order
             label_np = label.astype(np.uint8)
 
             # Load the original CT as reference for affine + header
             ref_nii = nib.load(str(image_path))
+            ref_shape = ref_nii.shape
+
+            # If shape is (D,H,W)=(234,186,247) but ref is (247,186,234),
+            # swap axes 0 and 2 so we match nibabel's (X,Y,Z).
+            if (
+                label_np.shape != ref_shape and
+                label_np.shape[0] == ref_shape[2] and
+                label_np.shape[1] == ref_shape[1] and
+                label_np.shape[2] == ref_shape[0]
+            ):
+                # (D,H,W) -> (W,H,D) == (X,Y,Z)
+                label_np = np.transpose(label_np, (2, 1, 0))
+                logger.info(
+                    f"Transposed prediction from original shape to match ref shape {ref_shape}."
+                )
 
             pred_nii = nib.Nifti1Image(
                 label_np,
                 affine=ref_nii.affine,
                 header=ref_nii.header,
+            )
+
+            # Keep sform/qform consistent
+            pred_nii.set_sform(
+                ref_nii.get_sform(),
+                code=ref_nii.get_sform(coded=True)[1] or 1
+            )
+            pred_nii.set_qform(
+                ref_nii.get_qform(),
+                code=ref_nii.get_qform(coded=True)[1] or 1
             )
 
             # Make sure sform/qform are consistent
@@ -349,51 +374,90 @@ def main(cfg):
             nib.save(pred_nii, str(out_path))
 
             # Metrics if GT masks are available
-            if mask_paths is not None and mask is not None:
-                '''
-                Label: (D, H, W) with {0:bg, 1:artery, 2:vein}
-                Mask:  torch.bool, same spatial shape, True = vessel (A∪V)
-                Predicted union-of-vessels (A ∪ V)
-                '''
-                union_pred = label > 0                       # Numpy bool, (D,H,W)
-                # Ground-truth union-of-vessels
-                union_gt = mask.cpu().numpy().astype(bool)   # (D,H,W)
+            if mask_paths is not None and mask_np is not None:
+                """
+                label: (D, H, W) with {0:bg, 1:artery, 2:vein}
+                mask_np: (D, H, W) with {0:bg, 1:artery, 2:vein}
+                """
 
-                # Volumetric Dice on vessel union
-                inter = np.logical_and(union_pred, union_gt).sum()
-                denom = union_pred.sum() + union_gt.sum()
-                dice = 2.0 * inter / (denom + 1e-5) if denom > 0 else 0.0
+                # UNION (A ∪ V)
+                union_pred = label > 0               # (D,H,W) bool
+                union_gt   = mask_np > 0             # (D,H,W) bool
 
-                # Hard clDice on vessel union (same metric as in train_av.py)
-                cldice = hard_cldice(union_pred.astype(bool), union_gt)
+                inter_u = np.logical_and(union_pred, union_gt).sum()
+                denom_u = union_pred.sum() + union_gt.sum()
+                dice_union = 2.0 * inter_u / (denom_u + 1e-5) if denom_u > 0 else 0.0
+                cldice_union = hard_cldice(union_pred.astype(bool), union_gt.astype(bool))
 
-                case_name = image_path.name.split('.')[0]
-                logger.info(f"Dice of {case_name}: {dice:.4f}")
-                logger.info(f"clDice of {case_name}: {cldice:.4f}")
+                # ARTERY (class = 1)
+                g_art = (mask_np == 1)
+                if g_art.any():
+                    p_art = (label == 1)
 
-                # Store metrics in a format compatible with calculate_mean_metrics
+                    inter_a = np.logical_and(p_art, g_art).sum()
+                    denom_a = p_art.sum() + g_art.sum()
+                    dice_art = 2.0 * inter_a / (denom_a + 1e-5) if denom_a > 0 else 0.0
+                    cldice_art = hard_cldice(p_art.astype(bool), g_art.astype(bool))
+                else:
+                    dice_art = 0.0
+                    cldice_art = 0.0
+
+                # VEIN (class = 2)
+                g_vein = (mask_np == 2)
+                if g_vein.any():
+                    p_vein = (label == 2)
+
+                    inter_v = np.logical_and(p_vein, g_vein).sum()
+                    denom_v = p_vein.sum() + g_vein.sum()
+                    dice_vein = 2.0 * inter_v / (denom_v + 1e-5) if denom_v > 0 else 0.0
+                    cldice_vein = hard_cldice(p_vein.astype(bool), g_vein.astype(bool))
+                else:
+                    dice_vein = 0.0
+                    cldice_vein = 0.0
+
+                case_name = image_path.name.split(".")[0]
+                logger.info(
+                    f"{case_name}: "
+                    f"Dice(A∪V)={dice_union:.4f} clDice(A∪V)={cldice_union:.4f} "
+                    f"Dice(art)={dice_art:.4f} clDice(art)={cldice_art:.4f} "
+                    f"Dice(vein)={dice_vein:.4f} clDice(vein)={cldice_vein:.4f}"
+                )
+
+                # Store all six metrics
                 metrics_dict[case_name] = {
-                    "dice": torch.tensor(dice),
-                    "cldice": torch.tensor(cldice),
+                    "dice":          torch.tensor(dice_union),
+                    "cldice":        torch.tensor(cldice_union),
+                    "dice_art":      torch.tensor(dice_art),
+                    "cldice_art":    torch.tensor(cldice_art),
+                    "dice_vein":     torch.tensor(dice_vein),
+                    "cldice_vein":   torch.tensor(cldice_vein),
                 }
 
     # Summarize over all images
     if mask_paths is not None and len(metrics_dict) > 0:
-        mean_metrics = calculate_mean_metrics(metrics_dict)
-        logger.info(f"Mean Dice: {mean_metrics['dice']:.4f}")
-        logger.info(f"Mean clDice: {mean_metrics['cldice']:.4f}")
+        # Compute mean for every metric key we stored
+        metric_names = list(next(iter(metrics_dict.values())).keys())
+        mean_metrics = {}
+        for m in metric_names:
+            vals = [metrics_dict[k][m].item() for k in metrics_dict]
+            mean_metrics[m] = float(np.mean(vals))
+
+        logger.info(f"Mean Dice(A∪V): {mean_metrics['dice']:.4f}")
+        logger.info(f"Mean clDice(A∪V): {mean_metrics['cldice']:.4f}")
+        logger.info(f"Mean Dice(art): {mean_metrics['dice_art']:.4f}")
+        logger.info(f"Mean clDice(art): {mean_metrics['cldice_art']:.4f}")
+        logger.info(f"Mean Dice(vein): {mean_metrics['dice_vein']:.4f}")
+        logger.info(f"Mean clDice(vein): {mean_metrics['cldice_vein']:.4f}")
+
         with open(output_folder / "metrics_per_volume.json", "w") as f:
             json.dump(
-                {k: {m: float(v[m].item()) for m in v} for k, v in metrics_dict.items()},
+                {k: {m: float(v[m].item()) for m, v_m in v.items()} for k, v in metrics_dict.items()},
                 f,
                 indent=2,
             )
+
         with open(output_folder / "metrics_mean.json", "w") as f:
-            json.dump(
-                {m: float(mean_metrics[m]) for m in mean_metrics},
-                f,
-                indent=2,
-            )
+            json.dump(mean_metrics, f, indent=2)
 
 if __name__ == "__main__":
     main()

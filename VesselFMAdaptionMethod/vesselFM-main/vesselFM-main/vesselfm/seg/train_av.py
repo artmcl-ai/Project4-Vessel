@@ -21,7 +21,7 @@ def set_seed(s):
     torch.manual_seed(s)
     torch.cuda.manual_seed_all(s)
 
-
+'''
 def random_multi_crop_3d(
     img,
     lab,
@@ -79,6 +79,7 @@ def random_multi_crop_3d(
             out_idx += 1
 
     return img_p, lab_p
+'''
 
 
 def _compute_cldice_worker(p_np, g_np, cldice_metric):
@@ -128,46 +129,76 @@ def unfreeze_encoder_tail(model, n_stages=2):
             p.requires_grad = True
 
 
-def av_head_loss(logits, lab, class_weights_av=None):
+def av_head_loss(
+    logits,
+    lab,
+    class_weights_av=None,
+    focal_gamma: float = 0.0,
+    use_tversky: bool = False,
+    tversky_alpha: float = 0.5,
+    tversky_beta: float = 0.5,
+):
     """
-    Extra artery/vein classification loss ("second head") using the same logits.
+    Extra artery/vein classification loss on vessel voxels only.
 
     logits: (B, 3, D, H, W), channels [bg, artery, vein]
     lab:    (B, D, H, W) with values {0,1,2}
     """
+
     # Only compute on vessel voxels
     mask = lab > 0  # (B, D, H, W)
     if not mask.any():
-        # no vessel voxels in this batch -> no A/V loss
         return logits.new_tensor(0.0)
 
     # Restrict logits to artery/vein channels
-    logits_av = logits[:, 1:3, ...]              # (B, 2, D, H, W)
+    logits_av = logits[:, 1:3, ...]  # (B, 2, D, H, W)
 
-    # Flatten over spatial dims, keep only masked voxels
     # (B,2,D,H,W) -> (B,D,H,W,2) -> (N,2)
     logits_flat = logits_av.permute(0, 2, 3, 4, 1)[mask]  # (N, 2)
 
     # Targets: map {artery=1, vein=2} -> {0,1}
-    targets_flat = (lab[mask] - 1).long()                 # (N,), values 0 or 1
+    targets_flat = (lab[mask] - 1).long()                 # (N,)
 
-    # Optional A/V class weights
+    # A/V class weights
     weight = None
     if class_weights_av is not None:
-        weight = logits_flat.new_tensor(class_weights_av, dtype=torch.float32)
+        w = torch.as_tensor(
+            class_weights_av, dtype=torch.float32, device=logits_flat.device
+        )
+        if w.numel() == 2:
+            weight = w
 
-    # Cross-entropy on artery vs vein
-    ce = F.cross_entropy(logits_flat, targets_flat, weight=weight)
+    # Focal cross-entropy term
+    if focal_gamma > 1e-6:
+        log_probs = F.log_softmax(logits_flat, dim=1)  # (N,2)
+        probs = log_probs.exp()
+        pt = probs.gather(1, targets_flat.unsqueeze(1)).squeeze(1)  # (N,)
 
-    # Dice part (2-class) on the same voxels
-    probs_flat = F.softmax(logits_flat, dim=1)  # (N, 2)
+        ce_per = -log_probs.gather(1, targets_flat.unsqueeze(1)).squeeze(1)
+        focal = (1.0 - pt) ** focal_gamma * ce_per
+        if weight is not None:
+            focal = focal * weight[targets_flat]
+        ce = focal.mean()
+    else:
+        ce = F.cross_entropy(logits_flat, targets_flat, weight=weight)
+
+    # Dice / Tversky term
+    probs_flat = F.softmax(logits_flat, dim=1)  # (N,2)
     target_onehot = torch.zeros_like(probs_flat)
-    target_onehot.scatter_(1, targets_flat.unsqueeze(1), 1.0)  # one-hot GT
+    target_onehot.scatter_(1, targets_flat.unsqueeze(1), 1.0)
 
-    intersection = (probs_flat * target_onehot).sum(dim=0)   # (2,)
-    denom = probs_flat.sum(dim=0) + target_onehot.sum(dim=0) + 1e-5
-    dice_per_class = 2.0 * intersection / denom
-    dice_loss = 1.0 - dice_per_class.mean()
+    if use_tversky:
+        TP = (probs_flat * target_onehot).sum(dim=0)
+        FP = (probs_flat * (1 - target_onehot)).sum(dim=0)
+        FN = ((1 - probs_flat) * target_onehot).sum(dim=0)
+        tversky = TP / (TP + tversky_alpha * FP + tversky_beta * FN + 1e-5)
+        dice_term = tversky
+    else:
+        intersection = (probs_flat * target_onehot).sum(dim=0)
+        denom = probs_flat.sum(dim=0) + target_onehot.sum(dim=0) + 1e-5
+        dice_term = 2.0 * intersection / denom
+
+    dice_loss = 1.0 - dice_term.mean()
 
     return ce + dice_loss
 
@@ -181,7 +212,7 @@ def one_epoch(
     device,
     amp=True,
     cldice_loss_fn=None,
-    cldice_weight: float = 0.0,        # union-of-vessels
+    cldice_weight: float = 0.0,        # Union-of-vessels
     patch_size=None,
     samples_per_volume: int = 1,
     av_head_weight: float = 0.0,
@@ -189,6 +220,10 @@ def one_epoch(
     cldice_weight_art: float = 0.0,
     cldice_weight_vein: float = 0.0,
     vessel_consistency_weight: float = 0.0,
+    av_focal_gamma: float = 0.0,
+    av_use_tversky: bool = False,
+    av_tversky_alpha: float = 0.5,
+    av_tversky_beta: float = 0.5,
 ):
 
     model.train()
@@ -259,7 +294,15 @@ def one_epoch(
 
             # Extra A/V classification loss (on vessel voxels)
             if av_head_weight > 0.0:
-                av_loss = av_head_loss(logits, lab, class_weights_av=av_class_weights)
+                av_loss = av_head_loss(
+                    logits,
+                    lab,
+                    class_weights_av=av_class_weights,
+                    focal_gamma=av_focal_gamma,
+                    use_tversky=av_use_tversky,
+                    tversky_alpha=av_tversky_alpha,
+                    tversky_beta=av_tversky_beta,
+                )
                 loss = loss + av_head_weight * av_loss
 
             # Vessel_head vs A/V union
@@ -586,6 +629,12 @@ def main(cfg):
     av_head_weight = cfg["loss"].get("av_head_weight", 1.0)
     av_class_weights = cfg["loss"].get("av_class_weights", [1.0, 1.0])
 
+    # Focal + Tversky for A/V head
+    av_focal_gamma = cfg["loss"].get("av_focal_gamma", 0.0)
+    av_use_tversky = cfg["loss"].get("av_use_tversky", False)
+    av_tversky_alpha = cfg["loss"].get("av_tversky_alpha", 0.5)
+    av_tversky_beta  = cfg["loss"].get("av_tversky_beta", 0.5)
+
     # Loss (Dice+CE etc.)
     loss_fn = CompositeLoss(
         num_classes=cfg["model"]["num_classes"],
@@ -639,6 +688,10 @@ def main(cfg):
             cldice_weight_art=cldice_weight_art,
             cldice_weight_vein=cldice_weight_vein,
             vessel_consistency_weight=vessel_consistency_weight,
+            av_focal_gamma=av_focal_gamma,
+            av_use_tversky=av_use_tversky,
+            av_tversky_alpha=av_tversky_alpha,
+            av_tversky_beta=av_tversky_beta,
         )
 
         (
@@ -713,6 +766,10 @@ def main(cfg):
             cldice_weight_art=cldice_weight_art,
             cldice_weight_vein=cldice_weight_vein,
             vessel_consistency_weight=vessel_consistency_weight,
+            av_focal_gamma=av_focal_gamma,
+            av_use_tversky=av_use_tversky,
+            av_tversky_alpha=av_tversky_alpha,
+            av_tversky_beta=av_tversky_beta,
         )
         (
             va_dice_union,
