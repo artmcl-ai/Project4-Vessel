@@ -26,7 +26,7 @@ At a high level, the architecture works as follows:
   
    which is used to produce:
    
-   * **Two output channels** (artery mask + vein mask)
+   * **Thre output channels** (artery mask + vein mask + background mask)
 
 <p align="center">
   <img width="896" height="470" alt="Model Architecture" src="https://github.com/user-attachments/assets/931baf4a-9842-4cc2-8510-3f5779cc83a3" />
