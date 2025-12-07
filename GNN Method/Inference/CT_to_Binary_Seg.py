@@ -50,7 +50,7 @@ def run_inference(model_path, input_nifti, output_nifti, roi_size=(96, 96, 96)):
     model.load_state_dict(torch.load(model_path, map_location=device))
     model = model.to(device)
     model.eval()
-
+    img_np = infer_transforms(input_nifti)
     img_torch = torch.tensor(img_np, dtype=torch.float32).unsqueeze(0).to(device)
     with torch.no_grad():
         pred_logits = sliding_window_inference(
