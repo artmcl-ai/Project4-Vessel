@@ -23,6 +23,7 @@ At a high level, the architecture works as follows:
    To mitigate GNN limitations and improve anatomical consistency, a secondary augmented VesselFM model takes:
 
    * **Two input channels** (CT scan + reconstructed mask)
+   which is used to produce:
    * **Two output channels** (artery mask + vein mask)
 
 <p align="center">
