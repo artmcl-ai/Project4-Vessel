@@ -11,7 +11,7 @@ At a high level, the architecture works as follows:
    The segmentation mask is converted into a graph where:
 
    * **Edges** represent vessel segments
-   * **Nodes** represent bifurcation points, junctions, or endpoints
+   * **Nodes** represent junctions and endpoints
 
 3. **Graph Neural Network Classification**
    A **Graph Attention Network (GAT)** model classifies each edge as either **artery** or **vein**.
@@ -24,8 +24,6 @@ At a high level, the architecture works as follows:
 
    * **Two input channels** (CT scan + reconstructed mask)
    * **Two output channels** (artery mask + vein mask)
-
-This produces the final artery/vein segmentation output.
 
 <p align="center">
   <img width="896" height="470" alt="Model Architecture" src="https://github.com/user-attachments/assets/931baf4a-9842-4cc2-8510-3f5779cc83a3" />
