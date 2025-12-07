@@ -30,14 +30,10 @@ spacing = nii.header.get_zooms()[:3]
 artery, vein, unknown, combined = reconstruct_artery_vein_from_graph(G, shape, spacing)
 
 seg_img = nib.load(mask_file)
-seg = seg_img.get_fdata().astype(np.int32)'
+seg = seg_img.get_fdata().astype(np.int32)
 out = propagate_nearest_label(seg, combined)
 nib.save(nib.Nifti1Image(out, seg_img.affine), out_path)
 print(f"  ✓ Saved nearest label propagation → {out_path}")
-
-
-# In[ ]:
-
 
 
 
