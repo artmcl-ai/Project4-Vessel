@@ -9,12 +9,13 @@ data:
   val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal_pre
   val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal_pre
   preprocessed: true
-  patch_size: [128, 128, 128]
+  patch_size: [96, 96, 96]
   samples_per_volume: 8
   min_fg_fraction: 0.02
   artery_patch_prob: 0.5
   min_artery_fraction: 0.005
   mixed_av_patch_prob: 0.3
+  num_workers: 16
 
 model:
   num_classes: 3        # Keep 3-class head, use vessel_head on top
@@ -30,7 +31,7 @@ loss:
 optim:
   lr: 3.0e-4
   weight_decay: 5.0e-6
-  val_cldice_workers: 8
+  val_cldice_workers: 16
   epochs: 80
   batch_size: 3
   amp: true

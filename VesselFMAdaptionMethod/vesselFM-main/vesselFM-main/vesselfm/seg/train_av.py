@@ -1,6 +1,7 @@
 import os, random, argparse, json, pathlib
 import numpy as np
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.cuda.amp import GradScaler, autocast
@@ -203,6 +204,76 @@ def av_head_loss(
     return ce + dice_loss
 
 
+def one_epoch_av_refine(
+    model,
+    loader,
+    opt,
+    scaler,
+    device,
+    amp=True,
+    class_weights_av=None,
+):
+    """
+    Stage 3: train only av_refine_head on top of a frozen backbone.
+
+    - Uses GT vessel mask (lab > 0) to restrict loss to vessel voxels.
+    - Predicts artery vs vein conditionally inside vessel regions.
+    """
+    # Backbone in eval mode (no BN/dropout changes)
+    model.eval()
+    # But we still want av_refine_head to be trainable
+    if hasattr(model, "av_refine_head"):
+        model.av_refine_head.train()
+
+    running = []
+
+    for i, batch in enumerate(loader, start=1):
+        img = batch["image"].to(device)
+        lab = batch["label"].to(device).long()
+        opt.zero_grad(set_to_none=True)
+
+        with autocast(enabled=amp):
+            # Get base logits; do NOT backprop through backbone
+            with torch.no_grad():
+                logits_base = model(img)          # (B,3,D,H,W)
+
+            logits_base = logits_base.detach()
+
+            vessel_mask = lab > 0                # (B,D,H,W)
+            if not vessel_mask.any():
+                # no vessels in this batch; skip
+                continue
+
+            # AV refine head: map 3-channel logits -> 2 classes (art/vein)
+            av_logits = model.av_refine_head(logits_base)       # (B,2,D,H,W)
+
+            # Flatten over vessel voxels only
+            av_logits_flat = av_logits.permute(0, 2, 3, 4, 1)[vessel_mask]  # (N,2)
+            targets_flat = (lab[vessel_mask] - 1).long()                    # {0,1}
+
+            weight = None
+            if class_weights_av is not None:
+                w = torch.as_tensor(
+                    class_weights_av,
+                    dtype=torch.float32,
+                    device=av_logits_flat.device,
+                )
+                if w.numel() == 2:
+                    weight = w
+
+            loss = F.cross_entropy(av_logits_flat, targets_flat, weight=weight)
+
+        scaler.scale(loss).backward()
+        scaler.step(opt)
+        scaler.update()
+        running.append(loss.item())
+
+        if i % 50 == 0 or i == 1:
+            print(f"  [train_av_refine] batch {i}/{len(loader)} loss={loss.item():.4f}")
+
+    return float(np.mean(running)) if running else 0.0
+
+
 def one_epoch(
     model,
     loader,
@@ -337,6 +408,7 @@ def eval_epoch(
     cldice_metric=None,
     patch_size=None,
     num_metric_workers: int = 0,
+    use_av_refine: bool = False,
 ):
     """
     Evaluation on full volumes via sliding-window inference.
@@ -373,15 +445,38 @@ def eval_epoch(
 
         if patch_size is not None:
             logits = sliding_window_inference(
-                img,                 # (B, C, D, H, W)
-                roi_size=patch_size, # e.g. [96, 96, 96]
+                img,
+                roi_size=patch_size,
                 sw_batch_size=2,
                 predictor=model,
             )
         else:
             logits = model(img)
 
-        probs = F.softmax(logits, dim=1)
+        if use_av_refine and hasattr(model, "av_refine_head"):
+            # Base probs
+            base_probs = F.softmax(logits, dim=1)        # (B,3,D,H,W)
+            p_bg = base_probs[:, 0:1, ...]
+            p_union = base_probs[:, 1:3, ...].sum(dim=1, keepdim=True).clamp(0.0, 1.0)
+
+            # Conditional A/V prediction from refine head
+            av_logits = model.av_refine_head(logits)     # (B,2,D,H,W)
+            av_probs = F.softmax(av_logits, dim=1)
+            p_art_cond = av_probs[:, 0:1, ...]
+            p_vein_cond = av_probs[:, 1:2, ...]
+
+            p_art = p_union * p_art_cond
+            p_vein = p_union * p_vein_cond
+
+            # Renormalize to keep sum ~1
+            denom = p_bg + p_art + p_vein + 1e-8
+            probs = torch.cat(
+                [p_bg / denom, p_art / denom, p_vein / denom],
+                dim=1,
+            )
+        else:
+            probs = F.softmax(logits, dim=1)
+
         pred = probs.argmax(1)  # (B, D, H, W)
 
         B = pred.shape[0]
@@ -602,7 +697,15 @@ def main(cfg):
         dropout=cfg["model"].get("dropout", 0.0),
     )
 
-    # ---- Load VesselFM backbone weights, but ignore mismatched head ----
+    # Add AV refine head (2-class) on top of 3-class logits
+    if not hasattr(model, "av_refine_head"):
+        model.av_refine_head = nn.Conv3d(
+            cfg["model"]["num_classes"],  # In_channels = 3
+            2,                             # Artery / vein
+            kernel_size=1,
+        )
+
+    # Load VesselFM backbone weights, but ignore mismatched head
     pre_ckpt = cfg["model"].get("pretrain_ckpt", None)
     if pre_ckpt:
         print(f"Loading pre-trained VesselFM weights from {pre_ckpt}")
@@ -812,6 +915,84 @@ def main(cfg):
             f"valDice(art)={va_dice_art:.4f} valClDice(art)={va_cldice_art:.4f} "
             f"valDice(vein)={va_dice_vein:.4f} valClDice(vein)={va_cldice_vein:.4f}"
         )
+
+    # Stage 3: freeze backbone, train only av_refine_head
+    lr_av_refine = cfg["optim"].get("lr_av_refine", 0.0)
+    epochs_av_refine = cfg["optim"].get("epochs_av_refine", 0)
+
+    if epochs_av_refine > 0 and lr_av_refine > 0.0:
+        print("\n=== Stage 3: AV refine head training ===", flush=True)
+
+        # Freeze everything except av_refine_head
+        for name, p in model.named_parameters():
+            if "av_refine_head" in name:
+                p.requires_grad = True
+            else:
+                p.requires_grad = False
+
+        opt_av = torch.optim.AdamW(
+            filter(lambda p: p.requires_grad, model.parameters()),
+            lr=lr_av_refine,
+            weight_decay=cfg["optim"]["weight_decay"],
+        )
+
+        class_weights_refine = cfg["loss"].get(
+            "av_refine_class_weights",
+            cfg["loss"].get("av_class_weights", [1.0, 1.0]),
+        )
+
+        for epoch in range(epochs_av_refine):
+            tr = one_epoch_av_refine(
+                model,
+                train_loader,
+                opt_av,
+                scaler,
+                device,
+                amp=cfg["optim"]["amp"],
+                class_weights_av=class_weights_refine,
+            )
+
+            (
+                va_dice_union,
+                va_cldice_union,
+                va_dice_art,
+                va_cldice_art,
+                va_dice_vein,
+                va_cldice_vein,
+            ) = eval_epoch(
+                model,
+                val_loader,
+                device,
+                cldice_metric=hard_cldice,
+                patch_size=eval_patch_size,
+                num_metric_workers=val_cldice_workers,
+                use_av_refine=True,
+            )
+
+            history["epoch"].append(epoch + 1)
+            history["stage"].append("S3")
+            history["train_loss"].append(tr)
+            history["val_dice"].append(va_dice_union)
+            history["val_clDice"].append(va_cldice_union)
+            history["val_dice_artery"].append(va_dice_art)
+            history["val_clDice_artery"].append(va_cldice_art)
+            history["val_dice_vein"].append(va_dice_vein)
+            history["val_clDice_vein"].append(va_cldice_vein)
+
+            if va_cldice_union > best_cl:
+                best_cl = va_cldice_union
+                torch.save(
+                    model.state_dict(),
+                    f"checkpoints/{cfg['experiment']}_best_cldice.pt",
+                )
+
+            print(
+                f"[S3][{epoch+1}/{epochs_av_refine}] "
+                f"loss={tr:.4f} "
+                f"valDice(A∪V)={va_dice_union:.4f} valClDice(A∪V)={va_cldice_union:.4f} "
+                f"valDice(art)={va_dice_art:.4f} valClDice(art)={va_cldice_art:.4f} "
+                f"valDice(vein)={va_dice_vein:.4f} valClDice(vein)={va_cldice_vein:.4f}"
+            )
 
     try:
         import pandas as pd

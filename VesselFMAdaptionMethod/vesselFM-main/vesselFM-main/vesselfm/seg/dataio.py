@@ -152,6 +152,9 @@ class NiftiVolume(Dataset):
         self.rotate_prob = float(aug_cfg.get("rotate_prob", 0.3))
         self.zoom_prob = float(aug_cfg.get("zoom_prob", 0.3))
 
+        # Gamma augmentation
+        self.gamma_range = aug_cfg.get("gamma", None)
+
         # Gaussian noise std (on image only, after all geometric augs)
         self.noise_std = float(aug_cfg.get("noise_std", 0.0))
 
@@ -298,6 +301,13 @@ class NiftiVolume(Dataset):
                 label,
                 zoom_factor,
             )
+
+        # Add gamma augmentation
+        if self.gamma_range is not None and np.random.rand() < 0.5:
+            g_lo, g_hi = self.gamma_range
+            gamma = np.random.uniform(g_lo, g_hi)
+            # assume image in [0,1]
+            image = np.clip(image, 0.0, 1.0) ** gamma
 
         # Add Gaussian noise on image only
         if self.noise_std > 0.0 and np.random.rand() < 0.5:

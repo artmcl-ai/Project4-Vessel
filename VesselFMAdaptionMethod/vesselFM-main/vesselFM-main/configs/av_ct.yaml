@@ -11,8 +11,8 @@ data:
   spacing: null # [1.0, 1.0, 1.0]
   clip_hu: null # [-1000, 600]
   zscore: false # True if not preprocessing
-  patch_size: [128, 128, 128]
-  samples_per_volume: 8          # Keep for now
+  patch_size: [96, 96, 96]
+  samples_per_volume: 8          # Keep at 8
   min_fg_fraction: 0.02          # Keep
   artery_patch_prob: 0.4         # ↓ a bit from 0.5
   mixed_av_patch_prob: 0.3       # Still enough of A+V
@@ -58,6 +58,9 @@ loss:
   av_tversky_alpha: 0.3
   av_tversky_beta: 0.7
 
+  # For the AV refine head (stage 3)
+  av_refine_class_weights: [0.7, 0.3]   # Artery, vein
+
 optim:
   lr_stage1: 3.0e-4 # Was 3.0e-4
   lr_stage2: 3.0e-5 # Was 3.0e-5
@@ -67,6 +70,8 @@ optim:
   epochs_stage2: 30
   batch_size: 3
   amp: true
+  lr_av_refine: 1.0e-4       # LR for AV refine head
+  epochs_av_refine: 10       # Number of refine epochs (set 0 to disable)
 
 augment:
   gamma: [0.8, 1.2] # Was [0.7, 1.5]

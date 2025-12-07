@@ -307,14 +307,36 @@ def main(cfg):
                 logits = resample(logits, target_shape=original_shape)    # back to original patch grid
                 preds.append(logits.cpu().squeeze())                      # (3,D,H,W)
 
-            # Merge TTA scales (multiclass A/V/BG)
-            if cfg.merging.max:
-                probs = torch.stack([F.softmax(p, dim=0) for p in preds]).max(dim=0)[0]   # (3,D,H,W)
-            else:
-                probs = torch.stack([F.softmax(p, dim=0) for p in preds]).mean(dim=0)    # (3,D,H,W)
+            # Preds is a list of per-scale logits, each (3,D,H,W)
+            logits_ensemble = torch.stack(preds).mean(dim=0)    # (3,D,H,W)
 
-            # Argmax -> labelmap {0:bg, 1:artery, 2:vein}
-            label = probs.argmax(0).cpu().numpy().astype(np.uint8)                        # (D,H,W)
+            if hasattr(model, "av_refine_head"):
+                # Same combination as in eval_epoch (but single volume)
+                base_probs = F.softmax(logits_ensemble.unsqueeze(0), dim=1)  # (1,3,D,H,W)
+                p_bg = base_probs[:, 0:1, ...]
+                p_union = base_probs[:, 1:3, ...].sum(dim=1, keepdim=True).clamp(0.0, 1.0)
+
+                av_logits = model.av_refine_head(logits_ensemble.unsqueeze(0))  # (1,2,D,H,W)
+                av_probs = F.softmax(av_logits, dim=1)
+                p_art_cond = av_probs[:, 0:1, ...]
+                p_vein_cond = av_probs[:, 1:2, ...]
+
+                p_art = p_union * p_art_cond
+                p_vein = p_union * p_vein_cond
+
+                denom = p_bg + p_art + p_vein + 1e-8
+                probs_final = torch.cat(
+                    [p_bg / denom, p_art / denom, p_vein / denom],
+                    dim=1,
+                )[0]                                  # (3,D,H,W)
+            else:
+                # Fallback: original behavior
+                if cfg.merging.max:
+                    probs_final = torch.stack([F.softmax(p, dim=0) for p in preds]).max(dim=0)[0]
+                else:
+                    probs_final = torch.stack([F.softmax(p, dim=0) for p in preds]).mean(dim=0)
+
+            label = probs_final.argmax(0).cpu().numpy().astype(np.uint8)
 
             # Class-wise CC cleanup
             if cfg.post.apply:
