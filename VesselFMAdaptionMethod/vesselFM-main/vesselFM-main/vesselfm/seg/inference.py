@@ -322,16 +322,16 @@ def main(cfg):
             total=len(image_paths),
             desc="Processing images.",
         ):
-            preds = []  # per-scale logits
+            preds = []  # per-scale logits (kept on device)
             mask_np = None
 
             for scale in cfg.tta.scales:
                 # read image (and mask if available)
                 image_np = image_reader_writer.read_images(image_path)[0].astype(np.float32)
-                image = transforms(image_np)[None].to(device)
+                image = transforms(image_np)[None].to(device)  # (1,1,D,H,W) on device
 
                 if mask_paths is not None and mask_np is None:
-                    # Load 3-class GT: 0=bg,1=artery,2=vein
+                    # Load 3-class GT: 0=bg,1=artery,2=vein, keep on CPU
                     mask_np = image_reader_writer.read_images(mask_paths[idx])[0].astype(np.int16)
 
                 # TTA intensity transforms
@@ -341,20 +341,20 @@ def main(cfg):
                 if cfg.tta.equalize_hist:
                     image_np = image.cpu().squeeze().numpy()
                     image_equal_hist_np = equalize_hist(image_np, nbins=cfg.tta.hist_bins)
-                    image = torch.from_numpy(image_equal_hist_np).to(image.device)[None][None]
+                    image = torch.from_numpy(image_equal_hist_np).to(device)[None][None]
 
                 # resample for scale, run model, resample back
                 original_shape = image.shape
-                image_scaled = resample(image, factor=scale)
-                logits = inferer(image_scaled, model)                     # (1,3,D,H,W)
-                logits = resample(logits, target_shape=original_shape)    # back to original patch grid
-                preds.append(logits.cpu().squeeze())                      # (3,D,H,W)
+                image_scaled = resample(image, factor=scale)          # on device
+                logits = inferer(image_scaled, model)                 # (1,3,D,H,W) on device
+                logits = resample(logits, target_shape=original_shape)
+                preds.append(logits.squeeze(0))                       # (3,D,H,W) on device
 
-            # Preds is a list of per-scale logits, each (3,D,H,W)
-            logits_ensemble = torch.stack(preds).mean(dim=0)    # (3,D,H,W)
+            # Preds is a list of per-scale logits, each (3,D,H,W) on device
+            logits_ensemble = torch.stack(preds).mean(dim=0)          # (3,D,H,W) on device
 
             if hasattr(model, "av_refine_head"):
-                # Same combination as in eval_epoch (but single volume)
+                # Stage-3 A/V refinement (same as eval_epoch(use_av_refine=True))
                 base_probs = F.softmax(logits_ensemble.unsqueeze(0), dim=1)  # (1,3,D,H,W)
                 p_bg = base_probs[:, 0:1, ...]
                 p_union = base_probs[:, 1:3, ...].sum(dim=1, keepdim=True).clamp(0.0, 1.0)
@@ -371,14 +371,15 @@ def main(cfg):
                 probs_final = torch.cat(
                     [p_bg / denom, p_art / denom, p_vein / denom],
                     dim=1,
-                )[0]                                  # (3,D,H,W)
+                )[0]  # (3,D,H,W) on device
             else:
-                # Fallback: original behavior
+                # Fallback: original vesselFM A/V logits fusion
                 if cfg.merging.max:
                     probs_final = torch.stack([F.softmax(p, dim=0) for p in preds]).max(dim=0)[0]
                 else:
                     probs_final = torch.stack([F.softmax(p, dim=0) for p in preds]).mean(dim=0)
 
+            # Move to CPU only when converting to numpy for saving / metrics
             label = probs_final.argmax(0).cpu().numpy().astype(np.uint8)
 
             # Class-wise CC cleanup
