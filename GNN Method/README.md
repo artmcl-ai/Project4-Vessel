@@ -1,6 +1,6 @@
 ## Overview
 
-This repository contains two main folders that provide all necessary files for both model training and inference. Each folder includes its own README with detailed explanations of its role within the full pipeline.
+This repository contains three main folders that provide all necessary files for both model training, inference, and generating plots and metrics used in the report. Each folder includes its own README with detailed explanations of its role within the full pipeline.
 
 At a high level, the architecture works as follows:
 
