@@ -19,3 +19,4 @@ tifffile
 pylibtiff
 nibabel
 gpustat
+gdown
