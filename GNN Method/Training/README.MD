@@ -94,6 +94,8 @@ In `Graph_Generator.py`, update the following variables:
 ```bash
 python Graph_Generator.py
 ```
+
+
 ***
 ***
 ***
@@ -106,6 +108,8 @@ in this file
 
 ```bash
 python GNN_training.py
+'''
+
 ***
 ***
 ***
