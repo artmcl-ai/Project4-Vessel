@@ -3,7 +3,7 @@ This repository contains everything needed to generate metrics, plots, figures, 
 
 ## 📁 Dice Score
 
-The file `Dice_Score.ipynb` is used to get the Dice metric between files
+The file `Dice_Score.ipynb` is used to get the Dice metric between a prediction mask and GT
 
 ### Required Path Setup
 In `Dice_Score.ipynb`, update the following variables:
