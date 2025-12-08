@@ -97,3 +97,12 @@ python Graph_Generator.py
 ***
 ***
 ***
+## 📁 Train and Define GNN
+
+The script `GNN_training.py` defines the GAT model used to classify edges as either veins or arteries. The model decleration and training is included
+in this file
+
+## Usage
+
+```bash
+python GNN_training.py
