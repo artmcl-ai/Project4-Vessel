@@ -113,20 +113,63 @@ def build_model(num_classes=3, dropout=0.0):
 
 
 def load_model(cfg, device):
+    """
+    Load the final A/V model (including Stage-3 av_refine_head) from ckpt_path.
+    Assumes ckpt_path points to the av_ct_best_cldice.pt written by train_av.py.
+    """
+    # Load checkpoint
     try:
         logger.info(f"Loading model from {cfg.ckpt_path}.")
         ckpt = torch.load(Path(cfg.ckpt_path), map_location=device, weights_only=True)
-    except:
-        logger.info(f"Loading model from Hugging Face.")
-        hf_hub_download(repo_id='bwittmann/vesselFM', filename='meta.yaml') # required to track downloads
+    except Exception as e:
+        logger.info(
+            f"Could not load {cfg.ckpt_path} ({e}). "
+            "Falling back to Hugging Face vesselFM_base.pt."
+        )
+        hf_hub_download(repo_id="bwittmann/vesselFM", filename="meta.yaml")
         ckpt = torch.load(
-            hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
-            map_location=device, weights_only=True
+            hf_hub_download(repo_id="bwittmann/vesselFM", filename="vesselFM_base.pt"),
+            map_location=device,
+            weights_only=True,
         )
 
+    # nstantiate the same backbone as in training
     model = hydra.utils.instantiate(cfg.model)
-    model.load_state_dict(ckpt, strict=False)
+
+    # Figure out how many output channels the backbone has (should be 3)
+    if "out_channels" in cfg.model:
+        out_ch = cfg.model.out_channels
+    elif "num_classes" in cfg.model:
+        out_ch = cfg.model.num_classes
+    else:
+        out_ch = 3  # sensible default for your A/V/BG setup
+
+    # Attach heads exactly like in train_av.py
+    # Vessel head (not strictly needed for inference right now, but harmless)
+    if not hasattr(model, "vessel_head"):
+        logger.info("[load_model] Adding vessel_head for union-of-vessels output.")
+        model.vessel_head = nn.Conv3d(out_ch, 1, kernel_size=1)
+
+    # AV refine head: Stage-3 2-class A/V classifier on top of logits
+    if not hasattr(model, "av_refine_head"):
+        logger.info("[load_model] Adding av_refine_head (A/V refine) on top of logits.")
+        model.av_refine_head = nn.Conv3d(out_ch, 2, kernel_size=1)
+
+    # Load weights into this full architecture
+    if isinstance(ckpt, dict):
+        # Works for both raw state_dict and {'state_dict': ...}
+        state = ckpt.get("state_dict", ckpt)
+    else:
+        state = ckpt
+
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    logger.info(
+        f"[load_model] Loaded checkpoint with {len(missing)} missing and "
+        f"{len(unexpected)} unexpected keys."
+    )
+
     return model
+
 
 def get_paths(cfg):
     """
@@ -473,7 +516,7 @@ def main(cfg):
 
         with open(output_folder / "metrics_per_volume.json", "w") as f:
             json.dump(
-                {k: {m: float(v[m].item()) for m, v_m in v.items()} for k, v in metrics_dict.items()},
+                {k: {m: float(v[m].item()) for m in v} for k, v in metrics_dict.items()},
                 f,
                 indent=2,
             )
