@@ -545,7 +545,7 @@ def main():
 
     # Compose Hydra config from the original config directory
     here = Path(__file__).resolve().parent
-    config_dir = here / "vesselfm" / "seg" / "configs"
+    config_dir = here / "configs"
 
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(config_dir), job_name="eval_inference"):
