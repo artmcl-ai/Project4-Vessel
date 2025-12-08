@@ -59,7 +59,7 @@ loss:
   av_tversky_beta: 0.7
 
   # For the AV refine head (stage 3)
-  av_refine_class_weights: [0.7, 0.3]   # Artery, vein
+  av_refine_class_weights: [0.55, 0.45]   # Artery, vein
 
 optim:
   lr_stage1: 3.0e-4 # Was 3.0e-4
@@ -71,7 +71,7 @@ optim:
   batch_size: 3
   amp: true
   lr_av_refine: 1.0e-4       # LR for AV refine head
-  epochs_av_refine: 10       # Number of refine epochs (set 0 to disable)
+  epochs_av_refine: 30       # Number of refine epochs (set 0 to disable)
 
 augment:
   gamma: [0.8, 1.2] # Was [0.7, 1.5]
