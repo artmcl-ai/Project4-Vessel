@@ -9,7 +9,7 @@ Usage inside Docker (as module):
 It will:
   1. Preprocess all NIfTI volumes in /input (optionally with labels).
   2. Save preprocessed data under /tmp/av_preprocessed (by default).
-  3. Run inference with the Stage-3 A/V model (with av_refine_head).
+  3. Run inference with the final Stage-3 A/V model (with av_refine_head).
   4. Write prediction masks into /output.
 """
 
@@ -36,11 +36,10 @@ from skimage.morphology import remove_small_objects
 from skimage.exposure import equalize_hist
 
 from .cldice_utils import hard_cldice
-from .eval_preprocessing_av_ct_nii import preprocess_dataset  # adjust name if needed
+from .eval_preprocessing_av_ct_nii import preprocess_dataset  # adjust if needed
 
 from vesselfm.seg.utils.data import generate_transforms
 from vesselfm.seg.utils.io import determine_reader_writer
-
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger("eval_inference")
@@ -120,7 +119,7 @@ def get_paths(cfg):
 
     if image_dir_str is None:
         raise RuntimeError(
-            "Image directory not set in config "
+            "image directory not set in config "
             "(looked for 'image_dir', 'data.image_dir', "
             "'image_path', and 'data.image_path')."
         )
@@ -134,6 +133,7 @@ def get_paths(cfg):
         mask_dir = Path(mask_dir_str)
 
     # --- 2. Collect images as Path objects ---
+    # Use *.nii* so it works for .nii and .nii.gz
     image_paths = sorted(image_dir.glob("*.nii*"))
     if not image_paths:
         raise RuntimeError(f"No images found in {image_dir}")
@@ -142,7 +142,7 @@ def get_paths(cfg):
     if mask_dir is None:
         return image_paths, None
 
-    # --- 3. Build mask paths with both naming schemes ---
+    # --- 3. Build mask paths with both naming schemes (also as Path objects) ---
     mask_paths = []
 
     for img_path in image_paths:
@@ -178,8 +178,9 @@ def get_paths(cfg):
 def resample(image, factor=None, target_shape=None):
     """
     Simple 3D trilinear resampling helper used for TTA scaling.
+    Mirrors logic from inference.py.
     """
-    if factor is None or factor == 1:
+    if factor == 1:
         return image
 
     if target_shape:
@@ -209,8 +210,8 @@ def load_model(cfg, device):
         logger.info(f"Loading model from {ckpt_path}.")
         ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
     except Exception as e:
-        logger.warning(
-            f"Could not load custom checkpoint {cfg.ckpt_path} ({e}). "
+        logger.info(
+            f"Could not load {cfg.ckpt_path} ({e}). "
             "Falling back to Hugging Face vesselFM_base.pt."
         )
         hf_hub_download(repo_id="bwittmann/vesselFM", filename="meta.yaml")
@@ -223,10 +224,10 @@ def load_model(cfg, device):
             weights_only=True,
         )
 
-    # 2) Instantiate backbone as in training
+    # 2) Instantiate the same backbone as in training
     model = hydra.utils.instantiate(cfg.model)
 
-    # 3) Infer number of output channels (should be 3: bg/art/vein)
+    # 3) Figure out how many output channels the backbone has (should be 3)
     if "out_channels" in cfg.model:
         out_ch = cfg.model.out_channels
     elif "num_classes" in cfg.model:
@@ -235,16 +236,19 @@ def load_model(cfg, device):
         out_ch = 3  # sensible default for your A/V/BG setup
 
     # 4) Attach heads exactly like in train_av.py
+    # Vessel head (not strictly needed for inference right now, but harmless)
     if not hasattr(model, "vessel_head"):
         logger.info("[load_model] Adding vessel_head for union-of-vessels output.")
         model.vessel_head = nn.Conv3d(out_ch, 1, kernel_size=1)
 
+    # AV refine head: Stage-3 2-class A/V classifier on top of logits
     if not hasattr(model, "av_refine_head"):
         logger.info("[load_model] Adding av_refine_head (A/V refine) on top of logits.")
         model.av_refine_head = nn.Conv3d(out_ch, 2, kernel_size=1)
 
-    # 5) Extract state dict (handles raw state_dict or {'state_dict': ...})
+    # 5) Load weights into this full architecture
     if isinstance(ckpt, dict):
+        # Works for both raw state_dict and {'state_dict': ...}
         state = ckpt.get("state_dict", ckpt)
     else:
         state = ckpt
@@ -263,24 +267,21 @@ def run_inference(cfg):
     Core inference loop, adapted from your updated vesselfm.seg.inference.main(),
     but taking a composed Hydra config as input.
     """
-    # Seed
+    # Seed libraries
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
     torch.cuda.manual_seed_all(cfg.seed)
 
-    # Device
+    # Set device
+    logger.info(f"Using device {cfg.device}.")
     device = cfg.device
-    if str(device).startswith("cuda") and not torch.cuda.is_available():
-        logger.warning("CUDA requested but not available; falling back to CPU.")
-        device = "cpu"
-    logger.info(f"Using device {device}.")
 
-    # Model
+    # Load model and ckpt
     model = load_model(cfg, device)
     model.to(device)
     model.eval()
 
-    # Transforms
+    # Init pre-processing transforms
     transforms = generate_transforms(cfg.transforms_config)
 
     # I/O
@@ -290,11 +291,13 @@ def run_inference(cfg):
     image_paths, mask_paths = get_paths(cfg)
     logger.info(f"Found {len(image_paths)} images in {image_paths[0].parent}.")
 
-    file_ending = cfg.image_file_ending if cfg.image_file_ending else image_paths[0].suffix
+    file_ending = (
+        cfg.image_file_ending if cfg.image_file_ending else image_paths[0].suffix
+    )
     image_reader_writer = determine_reader_writer(file_ending)()
-    _ = determine_reader_writer(file_ending)()  # save_writer (not used but kept for parity)
+    _ = determine_reader_writer(file_ending)()  # save_writer (kept for parity)
 
-    # Sliding window inferer
+    # Init sliding window inferer
     logger.debug(f"Sliding window patch size: {cfg.patch_size}")
     logger.debug(f"Sliding window batch size: {cfg.batch_size}.")
     logger.debug(f"Sliding window overlap: {cfg.overlap}.")
@@ -307,26 +310,26 @@ def run_inference(cfg):
         padding_mode=cfg.padding_mode,
     )
 
+    # Loop over images
     metrics_dict = {}
-
     with torch.no_grad():
         for idx, image_path in tqdm(
             enumerate(image_paths),
             total=len(image_paths),
             desc="Processing images.",
         ):
-            preds = []  # per-scale logits
+            preds = []  # per-scale logits (kept on device)
             mask_np = None
 
             for scale in cfg.tta.scales:
-                # read image (and mask if available)
+                # Read image (and mask if available)
                 image_np = image_reader_writer.read_images(image_path)[0].astype(
                     np.float32
                 )
-                image = transforms(image_np)[None].to(device)
+                image = transforms(image_np)[None].to(device)  # (1,1,D,H,W) on device
 
                 if mask_paths is not None and mask_np is None:
-                    # Load 3-class GT: 0=bg,1=artery,2=vein
+                    # Load 3-class GT: 0=bg,1=artery,2=vein, keep on CPU
                     mask_np = (
                         image_reader_writer.read_images(mask_paths[idx])[0]
                         .astype(np.int16)
@@ -343,23 +346,21 @@ def run_inference(cfg):
                     )
                     image = (
                         torch.from_numpy(image_equal_hist_np)
-                        .to(image.device)[None][None]
+                        .to(device)[None][None]
                     )
 
-                # resample for scale, run model, resample back
+                # Resample for scale, run model, resample back
                 original_shape = image.shape
-                image_scaled = resample(image, factor=scale)
-                logits = inferer(image_scaled, model)  # (1,3,D,H,W)
-                logits = resample(
-                    logits, target_shape=original_shape
-                )  # back to original patch grid
-                preds.append(logits.cpu().squeeze())  # (3,D,H,W)
+                image_scaled = resample(image, factor=scale)  # on device
+                logits = inferer(image_scaled, model)  # (1,3,D,H,W) on device
+                logits = resample(logits, target_shape=original_shape)
+                preds.append(logits.squeeze(0))  # (3,D,H,W) on device
 
-            # Ensemble over TTA scales
-            logits_ensemble = torch.stack(preds).mean(dim=0)  # (3,D,H,W)
+            # Preds is a list of per-scale logits, each (3,D,H,W) on device
+            logits_ensemble = torch.stack(preds).mean(dim=0)  # (3,D,H,W) on device
 
             if hasattr(model, "av_refine_head"):
-                # Same combination as in eval_epoch (but single volume)
+                # Stage-3 A/V refinement (same as eval_epoch(use_av_refine=True))
                 base_probs = F.softmax(
                     logits_ensemble.unsqueeze(0), dim=1
                 )  # (1,3,D,H,W)
@@ -382,9 +383,9 @@ def run_inference(cfg):
                 probs_final = torch.cat(
                     [p_bg / denom, p_art / denom, p_vein / denom],
                     dim=1,
-                )[0]  # (3,D,H,W)
+                )[0]  # (3,D,H,W) on device
             else:
-                # Fallback: original behavior
+                # Fallback: original vesselFM A/V logits fusion
                 if cfg.merging.max:
                     probs_final = torch.stack(
                         [F.softmax(p, dim=0) for p in preds]
@@ -394,6 +395,7 @@ def run_inference(cfg):
                         [F.softmax(p, dim=0) for p in preds]
                     ).mean(dim=0)
 
+            # Move to CPU only when converting to numpy for saving / metrics
             label = probs_final.argmax(0).cpu().numpy().astype(np.uint8)
 
             # Class-wise CC cleanup
@@ -412,7 +414,7 @@ def run_inference(cfg):
             # Label is a numpy array (D, H, W) in model/reader order
             label_np = label.astype(np.uint8)
 
-            # Use preprocessed CT as reference for affine + header
+            # Load the (preprocessed) CT as reference for affine + header
             ref_nii = nib.load(str(image_path))
             ref_shape = ref_nii.shape
 
@@ -622,7 +624,9 @@ def main():
     if "data" not in cfg:
         cfg.data = {}
     cfg.data.image_dir = str(preproc_images_dir)
-    cfg.data.mask_dir = str(preproc_labels_dir) if preproc_labels_dir is not None else None
+    cfg.data.mask_dir = (
+        str(preproc_labels_dir) if preproc_labels_dir is not None else None
+    )
 
     cfg.output_folder = str(out_dir)
 
