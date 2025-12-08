@@ -4,7 +4,7 @@ This repository focuses on developing a model capable of accurately segmenting a
 
 ## Repository Structure
 
-The project is divided into three primary folders, each representing a different appraoch:
+The project is divided into three primary folders each representing a different appraoch:
 
 - **GNN Approach**  
   A graph neural network designed to leverage vessel topology and connectivity.
@@ -16,5 +16,8 @@ The project is divided into three primary folders, each representing a different
   A customized version of VesselFM with significant architectural alterations to enable multiclass output.
 
 Each folder contains the code required for model development, training, and evaluation; however, the data and models themselves are too large, so they are kept in BU SCC.
+
+- **Metrics_Notebooks**  
+  Contains Jupyter notebooks used to generate metrics, tables, figures, etc. seen in the report
 
 ---
