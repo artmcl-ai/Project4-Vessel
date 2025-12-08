@@ -1,59 +1,65 @@
 #!/usr/bin/env python
-
 """
-End-to-end evaluation script:
+End-to-end evaluation script for VesselFM A/V model.
 
-1. Preprocess all NIfTI CT volumes (and optional labels) from an input directory
-   using eval_preprocess_av_ct_nii.preprocess_dataset().
-2. Run VesselFM artery/vein inference on the preprocessed images.
-3. Save the predicted masks as NIfTI files into an output directory.
+Usage inside Docker (as module):
 
-Intended to be the main entry point for the Docker runtime.
+    python -m vesselfm.seg.eval_inference /input /output
+
+It will:
+  1. Preprocess all NIfTI volumes in /input (optionally with labels).
+  2. Save preprocessed data under /tmp/av_preprocessed (by default).
+  3. Run inference with the Stage-3 A/V model (with av_refine_head).
+  4. Write prediction masks into /output.
 """
 
 import argparse
+import json
 import logging
 import warnings
 from pathlib import Path
 
-import numpy as np
 import nibabel as nib
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-
+import gdown
+import hydra
 from hydra import initialize_config_dir, compose
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
-
 from tqdm import tqdm
-import gdown
 from huggingface_hub import hf_hub_download
+from monai.inferers import SlidingWindowInfererAdapt
 from skimage.morphology import remove_small_objects
 from skimage.exposure import equalize_hist
 
-from monai.inferers import SlidingWindowInfererAdapt
+from .cldice_utils import hard_cldice
+from .eval_preprocessing_av_ct_nii import preprocess_dataset  # adjust name if needed
 
 from vesselfm.seg.utils.data import generate_transforms
 from vesselfm.seg.utils.io import determine_reader_writer
-from vesselfm.seg.cldice_utils import hard_cldice
-
-from .eval_preprocess_av_ct_nii import preprocess_dataset
 
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger("eval_inference")
 
-
+# Google Drive ID for your av_ct_best_cldice checkpoint
 GDRIVE_FILE_ID = "1UbrDxl4YokWTaygZ79eh3Flub2FyBJoZ"
+
+
+def setup_logging():
+    logging.basicConfig(
+        format="%(asctime)s [%(levelname)s] - %(name)s - %(message)s",
+        level=logging.INFO,
+    )
 
 
 def ensure_checkpoint(ckpt_path_str: str) -> Path:
     """
     Ensure that the checkpoint file exists at ckpt_path_str.
     If not, download it from Google Drive into that path.
-
-    Returns: Path to the checkpoint file.
     """
     ckpt_path = Path(ckpt_path_str)
 
@@ -61,17 +67,14 @@ def ensure_checkpoint(ckpt_path_str: str) -> Path:
         logger.info(f"Using existing checkpoint at: {ckpt_path}")
         return ckpt_path
 
-    # Create checkpoints directory if needed
     ckpt_path.parent.mkdir(parents=True, exist_ok=True)
 
-    # Build Google Drive download URL
     url = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
     logger.info(
         f"Checkpoint not found at {ckpt_path}. "
         f"Downloading from Google Drive ({url}) ..."
     )
 
-    # Download with gdown
     gdown.download(url, str(ckpt_path), quiet=False)
 
     if not ckpt_path.is_file():
@@ -84,57 +87,15 @@ def ensure_checkpoint(ckpt_path_str: str) -> Path:
     return ckpt_path
 
 
-def setup_logging():
-    logging.basicConfig(
-        format="%(asctime)s [%(levelname)s] - %(name)s - %(message)s",
-        level=logging.INFO,
-    )
-
-
-def load_model(cfg, device):
-    """
-    Load the model checkpoint.
-
-    Priority:
-      1. Custom A/V checkpoint from cfg.ckpt_path (downloaded from Google Drive if missing).
-      2. If that fails, fall back to the public vesselFM_base.pt from Hugging Face.
-    """
-    # First, ensure the custom checkpoint is present (download if needed)
-    try:
-        ckpt_path = ensure_checkpoint(cfg.ckpt_path)
-        logger.info(f"Loading model from custom checkpoint: {ckpt_path}")
-        ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
-    except Exception as e:
-        logger.warning(
-            f"Failed to load custom checkpoint from {cfg.ckpt_path} ({e}). "
-            "Falling back to Hugging Face vesselFM_base.pt."
-        )
-        # Fallback to HF base model (original vesselFM)
-        hf_hub_download(repo_id="bwittmann/vesselFM", filename="meta.yaml")
-        ckpt = torch.load(
-            hf_hub_download(
-                repo_id="bwittmann/vesselFM",
-                filename="vesselFM_base.pt"
-            ),
-            map_location=device,
-            weights_only=True,
-        )
-
-    # Instantiate model from Hydra config
-    model = hydra.utils.instantiate(cfg.model)
-    model.load_state_dict(ckpt, strict=False)
-    return model
-
-
 def get_paths(cfg):
     """
     Collect image and mask paths.
 
     Supports config layouts:
-      - cfg.data.image_dir / cfg.data.mask_dir
       - cfg.image_dir / cfg.mask_dir
-      - cfg.data.image_path / cfg.data.mask_path
       - cfg.image_path / cfg.mask_path
+      - cfg.data.image_dir / cfg.data.mask_dir
+      - cfg.data.image_path / cfg.data.mask_path
 
     Supports filename conventions:
       1) Same-name masks:
@@ -173,7 +134,6 @@ def get_paths(cfg):
         mask_dir = Path(mask_dir_str)
 
     # --- 2. Collect images as Path objects ---
-    # Use *.nii* so it works for .nii and .nii.gz
     image_paths = sorted(image_dir.glob("*.nii*"))
     if not image_paths:
         raise RuntimeError(f"No images found in {image_dir}")
@@ -222,7 +182,7 @@ def resample(image, factor=None, target_shape=None):
     if factor is None or factor == 1:
         return image
 
-    if target_shape is not None:
+    if target_shape:
         _, _, new_d, new_h, new_w = target_shape
     else:
         _, _, d, h, w = image.shape
@@ -235,44 +195,106 @@ def resample(image, factor=None, target_shape=None):
     )
 
 
+def load_model(cfg, device):
+    """
+    Load the final A/V model (including Stage-3 av_refine_head) from cfg.ckpt_path.
+
+    Assumes ckpt_path points to the av_ct_best_cldice checkpoint written by train_av.py.
+    If the file is missing, it will be downloaded from Google Drive.
+    If that fails, falls back to the public vesselFM_base.pt.
+    """
+    # 1) Ensure local checkpoint (download if needed)
+    try:
+        ckpt_path = ensure_checkpoint(cfg.ckpt_path)
+        logger.info(f"Loading model from {ckpt_path}.")
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
+    except Exception as e:
+        logger.warning(
+            f"Could not load custom checkpoint {cfg.ckpt_path} ({e}). "
+            "Falling back to Hugging Face vesselFM_base.pt."
+        )
+        hf_hub_download(repo_id="bwittmann/vesselFM", filename="meta.yaml")
+        ckpt = torch.load(
+            hf_hub_download(
+                repo_id="bwittmann/vesselFM",
+                filename="vesselFM_base.pt",
+            ),
+            map_location=device,
+            weights_only=True,
+        )
+
+    # 2) Instantiate backbone as in training
+    model = hydra.utils.instantiate(cfg.model)
+
+    # 3) Infer number of output channels (should be 3: bg/art/vein)
+    if "out_channels" in cfg.model:
+        out_ch = cfg.model.out_channels
+    elif "num_classes" in cfg.model:
+        out_ch = cfg.model.num_classes
+    else:
+        out_ch = 3  # sensible default for your A/V/BG setup
+
+    # 4) Attach heads exactly like in train_av.py
+    if not hasattr(model, "vessel_head"):
+        logger.info("[load_model] Adding vessel_head for union-of-vessels output.")
+        model.vessel_head = nn.Conv3d(out_ch, 1, kernel_size=1)
+
+    if not hasattr(model, "av_refine_head"):
+        logger.info("[load_model] Adding av_refine_head (A/V refine) on top of logits.")
+        model.av_refine_head = nn.Conv3d(out_ch, 2, kernel_size=1)
+
+    # 5) Extract state dict (handles raw state_dict or {'state_dict': ...})
+    if isinstance(ckpt, dict):
+        state = ckpt.get("state_dict", ckpt)
+    else:
+        state = ckpt
+
+    missing, unexpected = model.load_state_dict(state, strict=False)
+    logger.info(
+        f"[load_model] Loaded checkpoint with {len(missing)} missing and "
+        f"{len(unexpected)} unexpected keys."
+    )
+
+    return model
+
+
 def run_inference(cfg):
     """
-    Core inference loop, adapted from your original vesselfm.seg.inference.main().
+    Core inference loop, adapted from your updated vesselfm.seg.inference.main(),
+    but taking a composed Hydra config as input.
     """
-    # seed libraries
+    # Seed
     np.random.seed(cfg.seed)
     torch.manual_seed(cfg.seed)
     torch.cuda.manual_seed_all(cfg.seed)
 
-    # set device
+    # Device
     device = cfg.device
     if str(device).startswith("cuda") and not torch.cuda.is_available():
         logger.warning("CUDA requested but not available; falling back to CPU.")
         device = "cpu"
     logger.info(f"Using device {device}.")
 
-    # load model and ckpt
+    # Model
     model = load_model(cfg, device)
     model.to(device)
     model.eval()
 
-    # init pre-processing transforms
+    # Transforms
     transforms = generate_transforms(cfg.transforms_config)
 
-    # i/o
+    # I/O
     output_folder = Path(cfg.output_folder)
     output_folder.mkdir(exist_ok=True, parents=True)
 
     image_paths, mask_paths = get_paths(cfg)
     logger.info(f"Found {len(image_paths)} images in {image_paths[0].parent}.")
 
-    file_ending = (
-        cfg.image_file_ending if cfg.image_file_ending else image_paths[0].suffix
-    )
+    file_ending = cfg.image_file_ending if cfg.image_file_ending else image_paths[0].suffix
     image_reader_writer = determine_reader_writer(file_ending)()
-    save_writer = determine_reader_writer(file_ending)()
+    _ = determine_reader_writer(file_ending)()  # save_writer (not used but kept for parity)
 
-    # init sliding window inferer
+    # Sliding window inferer
     logger.debug(f"Sliding window patch size: {cfg.patch_size}")
     logger.debug(f"Sliding window batch size: {cfg.batch_size}.")
     logger.debug(f"Sliding window overlap: {cfg.overlap}.")
@@ -285,8 +307,8 @@ def run_inference(cfg):
         padding_mode=cfg.padding_mode,
     )
 
-    # loop over images
     metrics_dict = {}
+
     with torch.no_grad():
         for idx, image_path in tqdm(
             enumerate(image_paths),
@@ -333,11 +355,11 @@ def run_inference(cfg):
                 )  # back to original patch grid
                 preds.append(logits.cpu().squeeze())  # (3,D,H,W)
 
-            # Preds is a list of per-scale logits, each (3,D,H,W)
+            # Ensemble over TTA scales
             logits_ensemble = torch.stack(preds).mean(dim=0)  # (3,D,H,W)
 
-            # Merging / post-head logic
             if hasattr(model, "av_refine_head"):
+                # Same combination as in eval_epoch (but single volume)
                 base_probs = F.softmax(
                     logits_ensemble.unsqueeze(0), dim=1
                 )  # (1,3,D,H,W)
@@ -362,6 +384,7 @@ def run_inference(cfg):
                     dim=1,
                 )[0]  # (3,D,H,W)
             else:
+                # Fallback: original behavior
                 if cfg.merging.max:
                     probs_final = torch.stack(
                         [F.softmax(p, dim=0) for p in preds]
@@ -389,17 +412,19 @@ def run_inference(cfg):
             # Label is a numpy array (D, H, W) in model/reader order
             label_np = label.astype(np.uint8)
 
-            # Use preprocessed NIfTI as reference
+            # Use preprocessed CT as reference for affine + header
             ref_nii = nib.load(str(image_path))
             ref_shape = ref_nii.shape
 
-            # In case of axis mismatch, attempt (D,H,W)->(X,Y,Z) swap
+            # If shape is (D,H,W)=(234,186,247) but ref is (247,186,234),
+            # swap axes 0 and 2 so we match nibabel's (X,Y,Z).
             if (
                 label_np.shape != ref_shape
                 and label_np.shape[0] == ref_shape[2]
                 and label_np.shape[1] == ref_shape[1]
                 and label_np.shape[2] == ref_shape[0]
             ):
+                # (D,H,W) -> (W,H,D) == (X,Y,Z)
                 label_np = np.transpose(label_np, (2, 1, 0))
                 logger.info(
                     f"Transposed prediction from original shape to match ref shape {ref_shape}."
@@ -424,10 +449,9 @@ def run_inference(cfg):
 
             # Metrics if GT masks are available
             if mask_paths is not None and mask_np is not None:
-                """
-                label: (D, H, W) with {0:bg, 1:artery, 2:vein}
-                mask_np: (D, H, W) with {0:bg, 1:artery, 2:vein}
-                """
+                # label: (D, H, W) with {0:bg, 1:artery, 2:vein}
+                # mask_np: (D, H, W) with {0:bg, 1:artery, 2:vein}
+
                 # UNION (A ∪ V)
                 union_pred = label > 0
                 union_gt = mask_np > 0
@@ -481,6 +505,7 @@ def run_inference(cfg):
                     f"Dice(vein)={dice_vein:.4f} clDice(vein)={cldice_vein:.4f}"
                 )
 
+                # Store all six metrics
                 metrics_dict[case_name] = {
                     "dice": torch.tensor(dice_union),
                     "cldice": torch.tensor(cldice_union),
@@ -490,7 +515,7 @@ def run_inference(cfg):
                     "cldice_vein": torch.tensor(cldice_vein),
                 }
 
-    # Summarize over all images if masks were provided
+    # Summarize over all images
     if mask_paths is not None and len(metrics_dict) > 0:
         metric_names = list(next(iter(metrics_dict.values())).keys())
         mean_metrics = {}
@@ -505,20 +530,13 @@ def run_inference(cfg):
         logger.info(f"Mean Dice(vein): {mean_metrics['dice_vein']:.4f}")
         logger.info(f"Mean clDice(vein): {mean_metrics['cldice_vein']:.4f}")
 
-        # Per-volume metrics
-        import json
-
         with open(output_folder / "metrics_per_volume.json", "w") as f:
             json.dump(
-                {
-                    k: {m: float(v[m].item()) for m in v.keys()}
-                    for k, v in metrics_dict.items()
-                },
+                {k: {m: float(v[m].item()) for m in v} for k, v in metrics_dict.items()},
                 f,
                 indent=2,
             )
 
-        # Mean metrics
         with open(output_folder / "metrics_mean.json", "w") as f:
             json.dump(mean_metrics, f, indent=2)
 
@@ -528,8 +546,8 @@ def main():
 
     parser = argparse.ArgumentParser(
         description=(
-            "End-to-end evaluation: preprocess CTs and run VesselFM AV inference. "
-            "Typical container usage: python eval_inference.py /input /output"
+            "End-to-end evaluation: preprocess CTs and run VesselFM AV inference.\n"
+            "Typical container usage: python -m vesselfm.seg.eval_inference /input /output"
         )
     )
     parser.add_argument(
@@ -604,16 +622,12 @@ def main():
     if "data" not in cfg:
         cfg.data = {}
     cfg.data.image_dir = str(preproc_images_dir)
-    if preproc_labels_dir is not None:
-        cfg.data.mask_dir = str(preproc_labels_dir)
-    else:
-        cfg.data.mask_dir = None
+    cfg.data.mask_dir = str(preproc_labels_dir) if preproc_labels_dir is not None else None
 
     cfg.output_folder = str(out_dir)
 
     logger.info(f"Using config:\n{OmegaConf.to_yaml(cfg)}")
 
-    # Run the inference loop
     run_inference(cfg)
 
 
