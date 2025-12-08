@@ -38,7 +38,7 @@ from vesselfm.seg.utils.data import generate_transforms
 from vesselfm.seg.utils.io import determine_reader_writer
 from vesselfm.seg.cldice_utils import hard_cldice
 
-from eval_preprocess_av_ct_nii import preprocess_dataset
+from .eval_preprocess_av_ct_nii import preprocess_dataset
 
 
 warnings.filterwarnings("ignore")
