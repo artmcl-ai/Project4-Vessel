@@ -27,6 +27,7 @@ from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 
 from tqdm import tqdm
+import gdown
 from huggingface_hub import hf_hub_download
 from skimage.morphology import remove_small_objects
 from skimage.exposure import equalize_hist
@@ -44,6 +45,45 @@ warnings.filterwarnings("ignore")
 logger = logging.getLogger("eval_inference")
 
 
+GDRIVE_FILE_ID = "1UbrDxl4YokWTaygZ79eh3Flub2FyBJoZ"
+
+
+def ensure_checkpoint(ckpt_path_str: str) -> Path:
+    """
+    Ensure that the checkpoint file exists at ckpt_path_str.
+    If not, download it from Google Drive into that path.
+
+    Returns: Path to the checkpoint file.
+    """
+    ckpt_path = Path(ckpt_path_str)
+
+    if ckpt_path.is_file():
+        logger.info(f"Using existing checkpoint at: {ckpt_path}")
+        return ckpt_path
+
+    # Create checkpoints directory if needed
+    ckpt_path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Build Google Drive download URL
+    url = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
+    logger.info(
+        f"Checkpoint not found at {ckpt_path}. "
+        f"Downloading from Google Drive ({url}) ..."
+    )
+
+    # Download with gdown
+    gdown.download(url, str(ckpt_path), quiet=False)
+
+    if not ckpt_path.is_file():
+        raise RuntimeError(
+            f"Failed to download checkpoint to {ckpt_path}. "
+            "Please check network access and the Google Drive link."
+        )
+
+    logger.info(f"Successfully downloaded checkpoint to {ckpt_path}")
+    return ckpt_path
+
+
 def setup_logging():
     logging.basicConfig(
         format="%(asctime)s [%(levelname)s] - %(name)s - %(message)s",
@@ -53,26 +93,35 @@ def setup_logging():
 
 def load_model(cfg, device):
     """
-    Same logic as your original load_model() in vesselfm.seg.inference,
-    adapted to be used here.
+    Load the model checkpoint.
+
+    Priority:
+      1. Custom A/V checkpoint from cfg.ckpt_path (downloaded from Google Drive if missing).
+      2. If that fails, fall back to the public vesselFM_base.pt from Hugging Face.
     """
+    # First, ensure the custom checkpoint is present (download if needed)
     try:
-        logger.info(f"Loading model from {cfg.ckpt_path}.")
-        ckpt = torch.load(Path(cfg.ckpt_path), map_location=device, weights_only=True)
+        ckpt_path = ensure_checkpoint(cfg.ckpt_path)
+        logger.info(f"Loading model from custom checkpoint: {ckpt_path}")
+        ckpt = torch.load(ckpt_path, map_location=device, weights_only=True)
     except Exception as e:
-        logger.info(
-            f"Could not load ckpt from cfg.ckpt_path ({e}). "
+        logger.warning(
+            f"Failed to load custom checkpoint from {cfg.ckpt_path} ({e}). "
             "Falling back to Hugging Face vesselFM_base.pt."
         )
-        hf_hub_download(repo_id='bwittmann/vesselFM', filename='meta.yaml')  # required to track downloads
+        # Fallback to HF base model (original vesselFM)
+        hf_hub_download(repo_id="bwittmann/vesselFM", filename="meta.yaml")
         ckpt = torch.load(
-            hf_hub_download(repo_id='bwittmann/vesselFM', filename='vesselFM_base.pt'),
+            hf_hub_download(
+                repo_id="bwittmann/vesselFM",
+                filename="vesselFM_base.pt"
+            ),
             map_location=device,
             weights_only=True,
         )
 
-    model = torch.nn.Module()
-    model = __import__("hydra").utils.instantiate(cfg.model)
+    # Instantiate model from Hydra config
+    model = hydra.utils.instantiate(cfg.model)
     model.load_state_dict(ckpt, strict=False)
     return model
 
