@@ -1,6 +1,0 @@
-monai
-numpy
-nibabel
-networkx
-scipy
-scikit-image
