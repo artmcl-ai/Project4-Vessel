@@ -620,9 +620,12 @@ def main():
     with initialize_config_dir(config_dir=str(config_dir), job_name="eval_inference"):
         cfg = compose(config_name="inference")
 
-    # Override paths in config to point to preprocessed data and desired output
+    OmegaConf.set_struct(cfg, False)
+
     if "data" not in cfg:
-        cfg.data = {}
+        # Make sure this is an OmegaConf container, not a plain dict
+        cfg.data = OmegaConf.create({})
+    # Override paths in config to point to preprocessed data and desired output
     cfg.data.image_dir = str(preproc_images_dir)
     cfg.data.mask_dir = (
         str(preproc_labels_dir) if preproc_labels_dir is not None else None
