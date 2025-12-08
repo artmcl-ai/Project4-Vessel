@@ -27,4 +27,4 @@ RUN pip install --no-cache-dir -e .
 
 # ---- Default runtime command ----
 # Expectation: /input contains raw CT NIfTI files; /output is where masks will be written.
-CMD ["python", "eval_inference.py", "/input", "/output"]
+CMD ["python", "-m", "vesselfm.seg.eval_inference", "/input", "/output"]
