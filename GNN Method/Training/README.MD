@@ -108,7 +108,7 @@ in this file
 
 ```bash
 python GNN_training.py
-'''
+```
 
 ***
 ***
@@ -121,6 +121,7 @@ The script `Reconstruction.py` takes a labeled graph and converts it into a labe
 
 ```bash
 python Reconstruction.py
+```
 ***
 ***
 ***
@@ -134,3 +135,4 @@ output channel represents the 3 classes: arteries/veins/background
 
 ```bash
 python Finetune_3Class_VesselFM.py
+```
