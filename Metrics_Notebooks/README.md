@@ -12,3 +12,9 @@ In `Dice_Score.ipynb`, update the following variables:
 |---------|-------------|
 | `gt_img` | Path to the file containing your GT mask |
 | `recon_img` |Path to the file containing your prediction mask |
+
+***
+***
+***
+
+## 📁 
