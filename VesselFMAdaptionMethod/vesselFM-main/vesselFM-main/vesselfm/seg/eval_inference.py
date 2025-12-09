@@ -36,7 +36,7 @@ from skimage.morphology import remove_small_objects
 from skimage.exposure import equalize_hist
 
 from .cldice_utils import hard_cldice
-from .eval_preprocessing_av_ct_nii import preprocess_dataset  # adjust if needed
+from .eval_preprocessing_av_ct_nii import preprocess_dataset, resample_to_spacing  # adjust if needed
 
 from vesselfm.seg.utils.data import generate_transforms
 from vesselfm.seg.utils.io import determine_reader_writer
@@ -262,7 +262,7 @@ def load_model(cfg, device):
     return model
 
 
-def run_inference(cfg):
+def run_inference(cfg, raw_images_dir=None):
     """
     Core inference loop, adapted from your updated vesselfm.seg.inference.main(),
     but taking a composed Hydra config as input.
@@ -414,23 +414,73 @@ def run_inference(cfg):
             # Label is a numpy array (D, H, W) in model/reader order
             label_np = label.astype(np.uint8)
 
-            # Load the (preprocessed) CT as reference for affine + header
-            ref_nii = nib.load(str(image_path))
-            ref_shape = ref_nii.shape
+            # Use the preprocessed image as current reference (for orientation)
+            pre_nii = nib.load(str(image_path))
+            pre_shape = pre_nii.shape
 
             # If shape is (D,H,W)=(234,186,247) but ref is (247,186,234),
-            # swap axes 0 and 2 so we match nibabel's (X,Y,Z).
+            # Swap axes 0 and 2 so we match nibabel's (X,Y,Z) convention.
             if (
-                label_np.shape != ref_shape
-                and label_np.shape[0] == ref_shape[2]
-                and label_np.shape[1] == ref_shape[1]
-                and label_np.shape[2] == ref_shape[0]
+                label_np.shape != pre_shape
+                and label_np.shape[0] == pre_shape[2]
+                and label_np.shape[1] == pre_shape[1]
+                and label_np.shape[2] == pre_shape[0]
             ):
-                # (D,H,W) -> (W,H,D) == (X,Y,Z)
                 label_np = np.transpose(label_np, (2, 1, 0))
                 logger.info(
-                    f"Transposed prediction from original shape to match ref shape {ref_shape}."
+                    f"Transposed prediction from original shape to match preprocessed shape {pre_shape}."
                 )
+
+            # If we know the raw image directory, resample label to raw geometry
+            raw_nii = None
+            if raw_images_dir is not None:
+                raw_img_path = Path(raw_images_dir) / image_path.name
+                if raw_img_path.is_file():
+                    raw_nii = nib.load(str(raw_img_path))
+                    raw_shape = raw_nii.shape
+
+                    pre_spacing = pre_nii.header.get_zooms()[:3]
+                    raw_spacing = raw_nii.header.get_zooms()[:3]
+
+                    if (label_np.shape != raw_shape) or (pre_spacing != raw_spacing):
+                        logger.info(
+                            f"Resampling prediction from preprocessed spacing {pre_spacing} "
+                            f"to raw spacing {raw_spacing}."
+                        )
+                        # Use the same resampling logic as in preprocessing, but invert spacing
+                        label_resampled = resample_to_spacing(
+                            label_np.astype(np.float32),
+                            src_spacing=pre_spacing,
+                            tgt_spacing=raw_spacing,
+                            order=0,              # nearest-neighbor for labels
+                        ).astype(np.uint8)
+
+                        label_np = label_resampled
+
+                        # Additional safety: if shapes still differ by 1 voxel due to rounding,
+                        # Crop or pad to match raw_shape.
+                        if label_np.shape != raw_shape:
+                            logger.warning(
+                                f"Resampled label shape {label_np.shape} != raw shape {raw_shape}; "
+                                f"cropping/padding to match."
+                            )
+                            out_arr = np.zeros(raw_shape, dtype=label_np.dtype)
+                            min_shape = tuple(min(a, b) for a, b in zip(label_np.shape, raw_shape))
+                            src_slices = []
+                            dst_slices = []
+                            for a, b, m in zip(label_np.shape, raw_shape, min_shape):
+                                src_start = (a - m) // 2
+                                dst_start = (b - m) // 2
+                                src_slices.append(slice(src_start, src_start + m))
+                                dst_slices.append(slice(dst_start, dst_start + m))
+                            out_arr[tuple(dst_slices)] = label_np[tuple(src_slices)]
+                            label_np = out_arr
+
+            # Choose reference NIfTI for saving (raw if available, else preprocessed)
+            if raw_nii is not None:
+                ref_nii = raw_nii
+            else:
+                ref_nii = pre_nii
 
             pred_nii = nib.Nifti1Image(
                 label_np,
@@ -444,10 +494,12 @@ def run_inference(cfg):
             pred_nii.set_sform(sform, code=sform_code or 1)
             pred_nii.set_qform(qform, code=qform_code or 1)
 
-            out_name = f"{image_path.name.split('.')[0]}_{cfg.file_app}pred.nii.gz"
+            # Name the output based on the *raw* image name if available
+            base_name = ref_nii.get_filename().split("/")[-1].split(".")[0]
+            out_name = f"{base_name}_{cfg.file_app}pred.nii.gz"
             out_path = output_folder / out_name
             nib.save(pred_nii, str(out_path))
-            logger.info(f"Saved prediction to {out_path}")
+            logger.info(f"Saved prediction (raw-space) to {out_path}")
 
             # Metrics if GT masks are available
             if mask_paths is not None and mask_np is not None:
@@ -635,7 +687,7 @@ def main():
 
     logger.info(f"Using config:\n{OmegaConf.to_yaml(cfg)}")
 
-    run_inference(cfg)
+    run_inference(cfg, raw_images_dir=str(raw_images_dir))
 
 
 if __name__ == "__main__":
