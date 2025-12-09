@@ -2,15 +2,15 @@
 """
 End-to-end evaluation script for VesselFM A/V model.
 
-Usage inside Docker (as module):
+Typical usage inside Docker (as module):
 
     python -m vesselfm.seg.eval_inference /input /output
 
-It will:
-  1. Preprocess all NIfTI volumes in /input (optionally with labels).
-  2. Save preprocessed data under /tmp/av_preprocessed (by default).
-  3. Run inference with the final Stage-3 A/V model (with av_refine_head).
-  4. Write prediction masks into /output.
+Both /input and /output can be either:
+  * a directory (multi-volume mode), or
+  * a single NIfTI file (single-volume mode).
+In single-volume mode you can also pass a single NIfTI path for output to control
+the exact prediction filename.
 """
 
 import argparse
@@ -36,7 +36,7 @@ from skimage.morphology import remove_small_objects
 from skimage.exposure import equalize_hist
 
 from .cldice_utils import hard_cldice
-from .eval_preprocessing_av_ct_nii import preprocess_dataset, resample_to_spacing  # adjust if needed
+from .eval_preprocessing_av_ct_nii import preprocess_dataset, resample_to_spacing
 
 from vesselfm.seg.utils.data import generate_transforms
 from vesselfm.seg.utils.io import determine_reader_writer
@@ -45,7 +45,7 @@ warnings.filterwarnings("ignore")
 logger = logging.getLogger("eval_inference")
 
 # Google Drive ID for your av_ct_best_cldice checkpoint
-GDRIVE_FILE_ID = "1UbrDxl4YokWTaygZ79eh3Flub2FyBJoZ"
+GDRIVE_FILE_ID = "1FIz4lJl2vsYWwr10pDaE11buKWOJ6jNV"
 
 
 def setup_logging():
@@ -88,7 +88,7 @@ def ensure_checkpoint(ckpt_path_str: str) -> Path:
 
 def get_paths(cfg):
     """
-    Collect image and mask paths.
+    Collect image and mask paths from the Hydra config.
 
     Supports config layouts:
       - cfg.image_dir / cfg.mask_dir
@@ -96,53 +96,69 @@ def get_paths(cfg):
       - cfg.data.image_dir / cfg.data.mask_dir
       - cfg.data.image_path / cfg.data.mask_path
 
-    Supports filename conventions:
+    Each of these can be EITHER a directory or a single NIfTI file.
+
+    Filename conventions for directory-based masks:
       1) Same-name masks:
            image_004.nii.gz -> image_004.nii.gz
       2) image/label naming:
            image_004.nii.gz -> label_004.nii.gz
     """
-    # --- 1. Read directories from config with fallbacks ---
-    image_dir_str = (
+    # --- 1. Read locations from config with fallbacks ---
+    image_root_str = (
         OmegaConf.select(cfg, "data.image_dir")
         or OmegaConf.select(cfg, "image_dir")
         or OmegaConf.select(cfg, "data.image_path")
         or OmegaConf.select(cfg, "image_path")
     )
 
-    mask_dir_str = (
+    mask_root_str = (
         OmegaConf.select(cfg, "data.mask_dir")
         or OmegaConf.select(cfg, "mask_dir")
         or OmegaConf.select(cfg, "data.mask_path")
         or OmegaConf.select(cfg, "mask_path")
     )
 
-    if image_dir_str is None:
+    if image_root_str is None:
         raise RuntimeError(
-            "image directory not set in config "
+            "Image location not set in config "
             "(looked for 'image_dir', 'data.image_dir', "
             "'image_path', and 'data.image_path')."
         )
 
-    image_dir = Path(image_dir_str)
-
-    # Normalize mask_dir: either a Path or None
-    if mask_dir_str is None or mask_dir_str in ("", "null"):
-        mask_dir = None
-    else:
-        mask_dir = Path(mask_dir_str)
+    image_root = Path(image_root_str)
 
     # --- 2. Collect images as Path objects ---
-    # Use *.nii* so it works for .nii and .nii.gz
-    image_paths = sorted(image_dir.glob("*.nii*"))
-    if not image_paths:
-        raise RuntimeError(f"No images found in {image_dir}")
+    if image_root.is_dir():
+        # Use *.nii* so it works for .nii and .nii.gz
+        image_paths = sorted(image_root.glob("*.nii*"))
+        if not image_paths:
+            raise RuntimeError(f"No images found in directory {image_root}")
+    elif image_root.is_file():
+        image_paths = [image_root]
+    else:
+        raise RuntimeError(f"Image path {image_root} does not exist.")
 
-    # If no mask_dir (pure inference), just return images
-    if mask_dir is None:
+    # If no mask_root (pure inference), just return images
+    if mask_root_str is None or mask_root_str in ("", "null"):
         return image_paths, None
 
-    # --- 3. Build mask paths with both naming schemes (also as Path objects) ---
+    mask_root = Path(mask_root_str)
+
+    # --- 3. Build mask paths, supporting both file and directory cases ---
+    if mask_root.is_file():
+        # Single GT mask; only valid if there's one image
+        if len(image_paths) != 1:
+            raise RuntimeError(
+                "Mask path points to a single file but there are "
+                f"{len(image_paths)} images; cannot match uniquely."
+            )
+        return image_paths, [mask_root]
+
+    if not mask_root.is_dir():
+        raise RuntimeError(f"Mask path {mask_root} is neither a file nor a directory.")
+
+    mask_dir = mask_root
     mask_paths = []
 
     for img_path in image_paths:
@@ -262,10 +278,19 @@ def load_model(cfg, device):
     return model
 
 
-def run_inference(cfg, raw_images_dir=None):
+def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
     """
-    Core inference loop, adapted from your updated vesselfm.seg.inference.main(),
+    Core inference loop, adapted from vesselfm.seg.inference.main(),
     but taking a composed Hydra config as input.
+
+    raw_image_source:
+        Either a directory containing the original (raw) CT NIfTI files or
+        a single NIfTI file in single-volume mode. Used to map predictions back
+        to the raw image geometry (spacing, shape, affine).
+
+    explicit_output_path:
+        If not None and there is exactly one input volume, the prediction will
+        be written exactly to this file (overriding the default naming scheme).
     """
     # Seed libraries
     np.random.seed(cfg.seed)
@@ -309,6 +334,9 @@ def run_inference(cfg, raw_images_dir=None):
         sigma_scale=cfg.sigma_scale,
         padding_mode=cfg.padding_mode,
     )
+
+    # Prepare raw source Path (can be None, dir, or single file)
+    raw_source = Path(raw_image_source) if raw_image_source is not None else None
 
     # Loop over images
     metrics_dict = {}
@@ -431,11 +459,31 @@ def run_inference(cfg, raw_images_dir=None):
                     f"Transposed prediction from original shape to match preprocessed shape {pre_shape}."
                 )
 
-            # If we know the raw image directory, resample label to raw geometry
+            # If we know the raw image location, resample label to raw geometry
             raw_nii = None
-            if raw_images_dir is not None:
-                raw_img_path = Path(raw_images_dir) / image_path.name
-                if raw_img_path.is_file():
+            if raw_source is not None:
+                raw_img_path = None
+                if raw_source.is_file():
+                    # Single-file mode: only valid if there's exactly one image
+                    if len(image_paths) == 1:
+                        raw_img_path = raw_source
+                    else:
+                        logger.warning(
+                            "raw_image_source is a file but multiple preprocessed images "
+                            "are present; cannot reliably map. "
+                            "Falling back to preprocessed geometry."
+                        )
+                elif raw_source.is_dir():
+                    cand = raw_source / image_path.name
+                    if cand.is_file():
+                        raw_img_path = cand
+                    else:
+                        logger.warning(
+                            f"Expected raw image at {cand} but file does not exist; "
+                            "falling back to preprocessed geometry for this case."
+                        )
+
+                if raw_img_path is not None and raw_img_path.is_file():
                     raw_nii = nib.load(str(raw_img_path))
                     raw_shape = raw_nii.shape
 
@@ -457,8 +505,8 @@ def run_inference(cfg, raw_images_dir=None):
 
                         label_np = label_resampled
 
-                        # Additional safety: if shapes still differ by 1 voxel due to rounding,
-                        # Crop or pad to match raw_shape.
+                        # Additional safety: if shapes still differ slightly due to rounding,
+                        # crop or pad to match raw_shape.
                         if label_np.shape != raw_shape:
                             logger.warning(
                                 f"Resampled label shape {label_np.shape} != raw shape {raw_shape}; "
@@ -494,12 +542,26 @@ def run_inference(cfg, raw_images_dir=None):
             pred_nii.set_sform(sform, code=sform_code or 1)
             pred_nii.set_qform(qform, code=qform_code or 1)
 
-            # Name the output based on the *raw* image name if available
-            base_name = ref_nii.get_filename().split("/")[-1].split(".")[0]
-            out_name = f"{base_name}_{cfg.file_app}pred.nii.gz"
-            out_path = output_folder / out_name
+            # Name the output based on the raw image name if available
+            if explicit_output_path is not None and len(image_paths) == 1:
+                out_path = Path(explicit_output_path)
+            else:
+                if explicit_output_path is not None and len(image_paths) > 1:
+                    logger.warning(
+                        "Explicit output path was provided but multiple input images "
+                        "are present; ignoring explicit path and using default naming."
+                    )
+                # Default naming scheme
+                if ref_nii.get_filename() is not None:
+                    base_name = Path(ref_nii.get_filename()).name.split(".")[0]
+                else:
+                    # Fallback if header lacks filename
+                    base_name = image_path.name.split(".")[0]
+                out_name = f"{base_name}_{cfg.file_app}pred.nii.gz"
+                out_path = output_folder / out_name
+
             nib.save(pred_nii, str(out_path))
-            logger.info(f"Saved prediction (raw-space) to {out_path}")
+            logger.info(f"Saved prediction to {out_path}")
 
             # Metrics if GT masks are available
             if mask_paths is not None and mask_np is not None:
@@ -601,24 +663,29 @@ def main():
     parser = argparse.ArgumentParser(
         description=(
             "End-to-end evaluation: preprocess CTs and run VesselFM AV inference.\n"
-            "Typical container usage: python -m vesselfm.seg.eval_inference /input /output"
+            "Typical container usage:\n"
+            "  python -m vesselfm.seg.eval_inference /input /output\n\n"
+            "Both /input and /output can be a directory or a single NIfTI file."
         )
     )
     parser.add_argument(
         "input_dir",
         type=str,
-        help="Directory with raw CT NIfTI images (.nii or .nii.gz).",
+        help="Directory OR single .nii/.nii.gz with raw CT image(s).",
     )
     parser.add_argument(
         "output_dir",
         type=str,
-        help="Directory where predicted segmentation NIfTI masks will be written.",
+        help=(
+            "Directory OR single .nii/.nii.gz where predictions will be written. "
+            "If a single file is given, only valid in single-volume mode."
+        ),
     )
     parser.add_argument(
         "--labels_dir",
         type=str,
         default=None,
-        help="Optional directory with GT labels (for local metric computation).",
+        help="Optional directory OR single NIfTI file with GT labels (for local metric computation).",
     )
     parser.add_argument(
         "--tmp_preproc_dir",
@@ -634,20 +701,30 @@ def main():
 
     args = parser.parse_args()
 
-    raw_images_dir = Path(args.input_dir)
-    raw_labels_dir = Path(args.labels_dir) if args.labels_dir is not None else None
-    out_dir = Path(args.output_dir)
+    raw_input_path = Path(args.input_dir)
+    raw_labels_path = Path(args.labels_dir) if args.labels_dir is not None else None
+
+    # Interpret output path: directory vs explicit file
+    output_arg = Path(args.output_dir)
+    if output_arg.suffix in (".nii", ".nii.gz"):
+        # Single-volume explicit output file path
+        explicit_output_file = output_arg
+        out_dir = explicit_output_file.parent
+    else:
+        explicit_output_file = None
+        out_dir = output_arg
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tmp_root = Path(args.tmp_preproc_dir)
     preproc_images_dir = tmp_root / "images"
-    preproc_labels_dir = tmp_root / "labels" if raw_labels_dir is not None else None
+    preproc_labels_dir = tmp_root / "labels" if raw_labels_path is not None else None
 
     if not args.skip_preprocess:
         logger.info("Starting preprocessing of input volumes...")
         preprocess_dataset(
-            images_dir=raw_images_dir,
-            labels_dir=raw_labels_dir,
+            images_dir=raw_input_path,
+            labels_dir=raw_labels_path,
             out_images_dir=preproc_images_dir,
             out_labels_dir=preproc_labels_dir,
             target_spacing=(1.0, 1.0, 1.0),
@@ -661,8 +738,8 @@ def main():
         logger.info("Preprocessing finished.")
     else:
         # If skipping preprocessing, treat input_dir as already preprocessed
-        preproc_images_dir = raw_images_dir
-        preproc_labels_dir = raw_labels_dir
+        preproc_images_dir = raw_input_path
+        preproc_labels_dir = raw_labels_path
 
     # Compose Hydra config from the original config directory
     here = Path(__file__).resolve().parent
@@ -672,10 +749,10 @@ def main():
     with initialize_config_dir(config_dir=str(config_dir), job_name="eval_inference"):
         cfg = compose(config_name="inference")
 
+    # Allow dynamic insertion of new keys
     OmegaConf.set_struct(cfg, False)
 
     if "data" not in cfg:
-        # Make sure this is an OmegaConf container, not a plain dict
         cfg.data = OmegaConf.create({})
     # Override paths in config to point to preprocessed data and desired output
     cfg.data.image_dir = str(preproc_images_dir)
@@ -687,7 +764,12 @@ def main():
 
     logger.info(f"Using config:\n{OmegaConf.to_yaml(cfg)}")
 
-    run_inference(cfg, raw_images_dir=str(raw_images_dir))
+    # raw_input_path can be directory or single file; run_inference handles both
+    run_inference(
+        cfg,
+        raw_image_source=str(raw_input_path),
+        explicit_output_path=str(explicit_output_file) if explicit_output_file is not None else None,
+    )
 
 
 if __name__ == "__main__":

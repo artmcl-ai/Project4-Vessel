@@ -239,12 +239,12 @@ def preprocess_dataset(
 ):
     """
     Programmatic entry point: preprocess all images (and labels if provided)
-    in a directory.
+    in a directory OR preprocess a single image (and optional label file).
 
-    images_dir: path-like
-    labels_dir: path-like or None
-    out_images_dir: path-like
-    out_labels_dir: path-like or None
+    images_dir: path-like (directory OR single .nii/.nii.gz)
+    labels_dir: path-like or None (directory OR single .nii/.nii.gz)
+    out_images_dir: path-like directory
+    out_labels_dir: path-like directory or None
     """
     images_dir = Path(images_dir)
     labels_dir = Path(labels_dir) if labels_dir is not None else None
@@ -254,16 +254,21 @@ def preprocess_dataset(
     if labels_dir is None and crop_mode == "label":
         raise ValueError("crop_mode='label' requires labels_dir to be provided.")
 
-    img_files = sorted(
-        [
-            p
-            for p in images_dir.iterdir()
-            if p.is_file() and (p.name.endswith(".nii") or p.name.endswith(".nii.gz"))
-        ]
-    )
-
-    if not img_files:
-        raise RuntimeError(f"No NIfTI files found in {images_dir}")
+    # Determine which images to process
+    if images_dir.is_file():
+        img_files = [images_dir]
+    elif images_dir.is_dir():
+        img_files = sorted(
+            [
+                p
+                for p in images_dir.iterdir()
+                if p.is_file() and (p.name.endswith(".nii") or p.name.endswith(".nii.gz"))
+            ]
+        )
+        if not img_files:
+            raise RuntimeError(f"No NIfTI files found in {images_dir}")
+    else:
+        raise RuntimeError(f"images_dir {images_dir} is neither a file nor a directory.")
 
     for img_path in img_files:
         # Strip extension to get a clean base name image_001
@@ -276,29 +281,34 @@ def preprocess_dataset(
 
         lbl_path = None
         if labels_dir is not None:
-            candidates = []
+            if labels_dir.is_file():
+                # Single label file: assume it corresponds to this image (single-volume use-case)
+                lbl_path = labels_dir
+            else:
+                # labels_dir is a directory: apply the usual naming conventions
+                candidates = []
 
-            # 1) Same base name in labels dir
-            candidates.append(labels_dir / (base + ".nii.gz"))
-            candidates.append(labels_dir / (base + ".nii"))
+                # 1) Same base name in labels dir
+                candidates.append(labels_dir / (base + ".nii.gz"))
+                candidates.append(labels_dir / (base + ".nii"))
 
-            # 2) image_001 to label_001 pattern
-            if base.startswith("image_"):
-                idx = base[len("image_"):]  # "001"
-                candidates.append(labels_dir / f"label_{idx}.nii.gz")
-                candidates.append(labels_dir / f"label_{idx}.nii")
+                # 2) image_001 to label_001 pattern
+                if base.startswith("image_"):
+                    idx = base[len("image_"):]  # "001"
+                    candidates.append(labels_dir / f"label_{idx}.nii.gz")
+                    candidates.append(labels_dir / f"label_{idx}.nii")
 
-            # Pick the first existing candidate
-            for cand in candidates:
-                if cand.exists():
-                    lbl_path = cand
-                    break
+                # Pick the first existing candidate
+                for cand in candidates:
+                    if cand.exists():
+                        lbl_path = cand
+                        break
 
-            if lbl_path is None:
-                raise FileNotFoundError(
-                    f"Missing label for {img_path.name}. "
-                    f"Tried: {[str(c) for c in candidates]}"
-                )
+                if lbl_path is None:
+                    raise FileNotFoundError(
+                        f"Missing label for {img_path.name}. "
+                        f"Tried: {[str(c) for c in candidates]}"
+                    )
 
         preprocess_pair(
             img_path=img_path,
@@ -321,9 +331,9 @@ def cli_main():
         description="Preprocessing for VesselFM Adaptation"
     )
     parser.add_argument("--images", type=str, required=True,
-                        help="Directory with input .nii/.nii.gz images")
+                        help="Directory OR single .nii/.nii.gz with input images")
     parser.add_argument("--labels", type=str, default=None,
-                        help="Directory with input .nii/.nii.gz labels (optional)")
+                        help="Directory OR single .nii/.nii.gz with labels (optional)")
     parser.add_argument("--out_images", type=str, required=True,
                         help="Output directory for preprocessed images")
     parser.add_argument("--out_labels", type=str, default=None,

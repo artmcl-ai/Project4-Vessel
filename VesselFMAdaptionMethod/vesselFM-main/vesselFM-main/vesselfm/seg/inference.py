@@ -189,7 +189,7 @@ def get_paths(cfg):
     """
     import os
 
-    # --- 1. Read directories from config with fallbacks ---
+    # Read directories from config with fallbacks
     image_dir_str = (
         OmegaConf.select(cfg, "data.image_dir")
         or OmegaConf.select(cfg, "image_dir")
@@ -219,7 +219,7 @@ def get_paths(cfg):
     else:
         mask_dir = Path(mask_dir_str)
 
-    # --- 2. Collect images as Path objects ---
+    # Collect images as Path objects
     # Use *.nii* so it works for .nii and .nii.gz
     image_paths = sorted(image_dir.glob("*.nii*"))
     if not image_paths:
@@ -236,13 +236,13 @@ def get_paths(cfg):
         # img_path is a Path
         img_name = img_path.name  # e.g. "image_004.nii.gz"
 
-        # (a) First try: mask has EXACT same basename as image
+        # First try: mask has EXACT same basename as image
         same_name_mask = mask_dir / img_name
         if same_name_mask.exists():
             mask_paths.append(same_name_mask)
             continue
 
-        # (b) Second try: image_XXX.nii.gz -> label_XXX.nii.gz
+        # Second try: image_XXX.nii.gz -> label_XXX.nii.gz
         alt_mask = None
         if img_name.startswith("image_"):
             suffix = img_name[len("image_"):]          # "004.nii.gz"
@@ -251,7 +251,7 @@ def get_paths(cfg):
                 mask_paths.append(alt_mask)
                 continue
 
-        # If we get here, no matching mask was found for this image
+        # No matching mask was found for this image
         msg = (
             f"Could not find a mask for image:\n  {img_path}\n"
             f"Tried:\n  {same_name_mask}"
@@ -442,61 +442,119 @@ def main(cfg):
             # Metrics if GT masks are available
             if mask_paths is not None and mask_np is not None:
                 """
-                label: (D, H, W) with {0:bg, 1:artery, 2:vein}
+                label:   (D, H, W) with {0:bg, 1:artery, 2:vein}
                 mask_np: (D, H, W) with {0:bg, 1:artery, 2:vein}
+
+                We report:
+                  - Dice / clDice for union, artery, vein
+                  - FP% and FN%:
+                      * FP%_union_pred:   FP / (TP + FP)   for union (A∪V)
+                      * FN%_union_gt:     FN / (TP + FN)   for union (A∪V)
+                    and analogous metrics for artery and vein.
                 """
 
-                # UNION (A ∪ V)
-                union_pred = label > 0               # (D,H,W) bool
-                union_gt   = mask_np > 0             # (D,H,W) bool
+                # -------------------------
+                # UNION (A ∪ V) as binary
+                # -------------------------
+                union_pred = label > 0    # (D,H,W) bool
+                union_gt   = mask_np > 0  # (D,H,W) bool
 
-                inter_u = np.logical_and(union_pred, union_gt).sum()
+                tp_u = np.logical_and(union_pred, union_gt).sum()
+                fp_u = np.logical_and(union_pred, np.logical_not(union_gt)).sum()
+                fn_u = np.logical_and(np.logical_not(union_pred), union_gt).sum()
+                tn_u = np.logical_and(np.logical_not(union_pred), np.logical_not(union_gt)).sum()
+
                 denom_u = union_pred.sum() + union_gt.sum()
-                dice_union = 2.0 * inter_u / (denom_u + 1e-5) if denom_u > 0 else 0.0
+                dice_union = 2.0 * tp_u / (denom_u + 1e-5) if denom_u > 0 else 0.0
                 cldice_union = hard_cldice(union_pred.astype(bool), union_gt.astype(bool))
 
+                pred_pos_u = tp_u + fp_u
+                gt_pos_u   = tp_u + fn_u
+
+                fp_pct_union_pred = 100.0 * fp_u / (pred_pos_u + 1e-5) if pred_pos_u > 0 else 0.0
+                fn_pct_union_gt   = 100.0 * fn_u / (gt_pos_u + 1e-5)   if gt_pos_u > 0 else 0.0
+
+                # -------------------------
                 # ARTERY (class = 1)
+                # -------------------------
                 g_art = (mask_np == 1)
                 if g_art.any():
                     p_art = (label == 1)
 
-                    inter_a = np.logical_and(p_art, g_art).sum()
+                    tp_a = np.logical_and(p_art, g_art).sum()
+                    fp_a = np.logical_and(p_art, np.logical_not(g_art)).sum()
+                    fn_a = np.logical_and(np.logical_not(p_art), g_art).sum()
+
                     denom_a = p_art.sum() + g_art.sum()
-                    dice_art = 2.0 * inter_a / (denom_a + 1e-5) if denom_a > 0 else 0.0
+                    dice_art = 2.0 * tp_a / (denom_a + 1e-5) if denom_a > 0 else 0.0
                     cldice_art = hard_cldice(p_art.astype(bool), g_art.astype(bool))
+
+                    pred_pos_a = tp_a + fp_a
+                    gt_pos_a   = tp_a + fn_a
+
+                    fp_pct_art_pred = 100.0 * fp_a / (pred_pos_a + 1e-5) if pred_pos_a > 0 else 0.0
+                    fn_pct_art_gt   = 100.0 * fn_a / (gt_pos_a + 1e-5)   if gt_pos_a > 0 else 0.0
                 else:
                     dice_art = 0.0
                     cldice_art = 0.0
+                    fp_pct_art_pred = 0.0
+                    fn_pct_art_gt = 0.0
 
+                # -------------------------
                 # VEIN (class = 2)
+                # -------------------------
                 g_vein = (mask_np == 2)
                 if g_vein.any():
                     p_vein = (label == 2)
 
-                    inter_v = np.logical_and(p_vein, g_vein).sum()
+                    tp_v = np.logical_and(p_vein, g_vein).sum()
+                    fp_v = np.logical_and(p_vein, np.logical_not(g_vein)).sum()
+                    fn_v = np.logical_and(np.logical_not(p_vein), g_vein).sum()
+
                     denom_v = p_vein.sum() + g_vein.sum()
-                    dice_vein = 2.0 * inter_v / (denom_v + 1e-5) if denom_v > 0 else 0.0
+                    dice_vein = 2.0 * tp_v / (denom_v + 1e-5) if denom_v > 0 else 0.0
                     cldice_vein = hard_cldice(p_vein.astype(bool), g_vein.astype(bool))
+
+                    pred_pos_v = tp_v + fp_v
+                    gt_pos_v   = tp_v + fn_v
+
+                    fp_pct_vein_pred = 100.0 * fp_v / (pred_pos_v + 1e-5) if pred_pos_v > 0 else 0.0
+                    fn_pct_vein_gt   = 100.0 * fn_v / (gt_pos_v + 1e-5)   if gt_pos_v > 0 else 0.0
                 else:
                     dice_vein = 0.0
                     cldice_vein = 0.0
+                    fp_pct_vein_pred = 0.0
+                    fn_pct_vein_gt = 0.0
 
                 case_name = image_path.name.split(".")[0]
+
                 logger.info(
                     f"{case_name}: "
                     f"Dice(A∪V)={dice_union:.4f} clDice(A∪V)={cldice_union:.4f} "
                     f"Dice(art)={dice_art:.4f} clDice(art)={cldice_art:.4f} "
-                    f"Dice(vein)={dice_vein:.4f} clDice(vein)={cldice_vein:.4f}"
+                    f"Dice(vein)={dice_vein:.4f} clDice(vein)={cldice_vein:.4f} | "
+                    f"FP%(A∪V|pred)={fp_pct_union_pred:.2f} FN%(A∪V|gt)={fn_pct_union_gt:.2f} | "
+                    f"FP%(art|pred)={fp_pct_art_pred:.2f} FN%(art|gt)={fn_pct_art_gt:.2f} | "
+                    f"FP%(vein|pred)={fp_pct_vein_pred:.2f} FN%(vein|gt)={fn_pct_vein_gt:.2f}"
                 )
 
-                # Store all six metrics
+                # Store metrics for JSON + summary
                 metrics_dict[case_name] = {
-                    "dice":          torch.tensor(dice_union),
-                    "cldice":        torch.tensor(cldice_union),
-                    "dice_art":      torch.tensor(dice_art),
-                    "cldice_art":    torch.tensor(cldice_art),
-                    "dice_vein":     torch.tensor(dice_vein),
-                    "cldice_vein":   torch.tensor(cldice_vein),
+                    # union
+                    "dice":               torch.tensor(dice_union),
+                    "cldice":             torch.tensor(cldice_union),
+                    "fp_pct_union_pred":  torch.tensor(fp_pct_union_pred),
+                    "fn_pct_union_gt":    torch.tensor(fn_pct_union_gt),
+                    # artery
+                    "dice_art":           torch.tensor(dice_art),
+                    "cldice_art":         torch.tensor(cldice_art),
+                    "fp_pct_art_pred":    torch.tensor(fp_pct_art_pred),
+                    "fn_pct_art_gt":      torch.tensor(fn_pct_art_gt),
+                    # vein
+                    "dice_vein":          torch.tensor(dice_vein),
+                    "cldice_vein":        torch.tensor(cldice_vein),
+                    "fp_pct_vein_pred":   torch.tensor(fp_pct_vein_pred),
+                    "fn_pct_vein_gt":     torch.tensor(fn_pct_vein_gt),
                 }
 
     # Summarize over all images
@@ -514,6 +572,13 @@ def main(cfg):
         logger.info(f"Mean clDice(art): {mean_metrics['cldice_art']:.4f}")
         logger.info(f"Mean Dice(vein): {mean_metrics['dice_vein']:.4f}")
         logger.info(f"Mean clDice(vein): {mean_metrics['cldice_vein']:.4f}")
+
+        logger.info(f"Mean FP%(A∪V|pred): {mean_metrics['fp_pct_union_pred']:.2f}")
+        logger.info(f"Mean FN%(A∪V|gt):   {mean_metrics['fn_pct_union_gt']:.2f}")
+        logger.info(f"Mean FP%(art|pred): {mean_metrics['fp_pct_art_pred']:.2f}")
+        logger.info(f"Mean FN%(art|gt):   {mean_metrics['fn_pct_art_gt']:.2f}")
+        logger.info(f"Mean FP%(vein|pred): {mean_metrics['fp_pct_vein_pred']:.2f}")
+        logger.info(f"Mean FN%(vein|gt):   {mean_metrics['fn_pct_vein_gt']:.2f}")
 
         with open(output_folder / "metrics_per_volume.json", "w") as f:
             json.dump(
