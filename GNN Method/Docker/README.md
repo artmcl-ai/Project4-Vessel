@@ -8,5 +8,6 @@ where '%cd%\input2' represents the directory with your inputs & %cd%\output2 rep
 masks to be stored
 
 ENSURE THAT THESE DIRECTORIES EXIST if you do not create the directories and store your inputs in the input folder then the docker will not run!
+The inputs should be .nii.gz images of non-contrast CT images.
 
 The models are not stored in this repository, but they are contained in the image.
