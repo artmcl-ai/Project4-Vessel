@@ -13,10 +13,10 @@ import torch
 def skeletonize_3d_safe(vol):
     try:
         from skimage.morphology import skeletonize_3d
-        return skeletonize_3d(vol.astype(bool)).astype(np.uint8) #This one doesn't work ?
+        return skeletonize_3d(vol.astype(bool)).astype(np.uint8) #This should work with correct version of python
     except ImportError:
         from skimage.morphology import skeletonize
-        skel = np.zeros_like(vol, dtype=bool)
+        skel = np.zeros_like(vol, dtype=bool) #failsafe
         for z in range(vol.shape[0]):
             skel[z] = skeletonize(vol[z])
         return skel.astype(np.uint8)
