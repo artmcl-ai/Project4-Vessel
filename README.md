@@ -4,15 +4,19 @@ This repository focuses on developing a model capable of accurately segmenting a
 
 ## Repository Structure
 
-The project is divided into three primary folders each representing a different appraoch:
+The project is divided into four primary folders each representing a different appraoch:
 
-- **GNN Approach**  
+
+- **UNet Approach (Baseline)**  
+  A convolutional neural network architecture optimized for CT image segmentation.
+  
+- **VesselFM + GNN Approach**  
   A graph neural network designed to leverage vessel topology and connectivity.
 
-- **UNet Approach**  
-  A convolutional neural network architecture optimized for CT image segmentation.
+- **VesselFM 3-Class Multihead Adaptation Approach**  
+  A customized version of VesselFM with significant architectural alterations to enable multiclass output.
 
-- **Modified VesselFM**  
+  - **VesselFM + nnUNET approach**  
   A customized version of VesselFM with significant architectural alterations to enable multiclass output.
 
 Each folder contains the code required for model development, training, and evaluation; however, the data and models themselves are too large, so they are kept in BU SCC.
