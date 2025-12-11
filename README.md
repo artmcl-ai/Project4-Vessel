@@ -16,7 +16,7 @@ The project is divided into four primary folders each representing a different a
 - **VesselFM 3-Class Multihead Adaptation Approach**  
   A customized version of VesselFM with significant architectural alterations to enable multiclass output.
 
-  - **VesselFM + nnUNET approach**  
+- **VesselFM + nnUNET approach**  
   A customized version of VesselFM with significant architectural alterations to enable multiclass output.
 
 Each folder contains the code required for model development, training, and evaluation; however, the data and models themselves are too large, so they are kept in BU SCC.
