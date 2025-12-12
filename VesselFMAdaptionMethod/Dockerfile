@@ -13,6 +13,7 @@ RUN groupadd -r vesselfm && useradd -m --no-log-init -r -g vesselfm vesselfm
 # ---- Copy application code ----
 WORKDIR /app
 COPY vesselFM-main/vesselFM-main /app
+COPY av_ct_best_cldice.pt /app/checkpoints/av_ct_best_cldice.pt
 
 # ---- Install Python dependencies into global env ----
 RUN pip install --no-cache-dir -r requirements.txt && \

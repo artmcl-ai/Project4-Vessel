@@ -20,7 +20,7 @@ data:
 model:
   num_classes: 3        # Keep 3-class head, use vessel_head on top
   dropout: 0.1
-  pretrain_ckpt: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/vesselfm_finetuned_monai.pt
+  pretrain_ckpt: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/vesselfm_finetuned.pt
 
 loss:
   # Relative weights for BCE vs clDice on vessel_head

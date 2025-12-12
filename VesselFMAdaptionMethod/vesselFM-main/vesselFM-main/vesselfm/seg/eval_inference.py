@@ -347,21 +347,13 @@ def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
             desc="Processing images.",
         ):
             preds = []  # per-scale logits (kept on device)
-            mask_np = None
 
             for scale in cfg.tta.scales:
-                # Read image (and mask if available)
+                # Read image
                 image_np = image_reader_writer.read_images(image_path)[0].astype(
                     np.float32
                 )
                 image = transforms(image_np)[None].to(device)  # (1,1,D,H,W) on device
-
-                if mask_paths is not None and mask_np is None:
-                    # Load 3-class GT: 0=bg,1=artery,2=vein, keep on CPU
-                    mask_np = (
-                        image_reader_writer.read_images(mask_paths[idx])[0]
-                        .astype(np.int16)
-                    )
 
                 # TTA intensity transforms
                 if cfg.tta.invert:
@@ -423,7 +415,7 @@ def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
                         [F.softmax(p, dim=0) for p in preds]
                     ).mean(dim=0)
 
-            # Move to CPU only when converting to numpy for saving / metrics
+            # Prediction in preprocessed image space
             label = probs_final.argmax(0).cpu().numpy().astype(np.uint8)
 
             # Class-wise CC cleanup
@@ -458,6 +450,88 @@ def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
                 logger.info(
                     f"Transposed prediction from original shape to match preprocessed shape {pre_shape}."
                 )
+            
+                        # --- Metrics in PREPROCESSED space (paper metrics) ---
+            if mask_paths is not None:
+                # GT in preprocessed space (from /tmp/av_preprocessed/labels)
+                gt_pre_nii = nib.load(str(mask_paths[idx]))
+                gt_pre = gt_pre_nii.get_fdata().astype(np.int16)
+
+                if gt_pre.shape != label_np.shape:
+                    logger.warning(
+                        f"[metrics-pre] GT shape {gt_pre.shape} != pred shape {label_np.shape}; "
+                        "skipping metrics for this case in preprocessed space."
+                    )
+                else:
+                    pred_pre = label_np
+                    gt = gt_pre
+
+                    # --- VESSEL (A ∪ V) ---
+                    union_pred = pred_pre > 0
+                    union_gt = gt > 0
+
+                    inter_u = np.logical_and(union_pred, union_gt).sum()
+                    denom_u = union_pred.sum() + union_gt.sum()
+                    dice_vessel = (
+                        2.0 * inter_u / (denom_u + 1e-5) if denom_u > 0 else 0.0
+                    )
+                    cldice_vessel = hard_cldice(
+                        union_pred.astype(bool), union_gt.astype(bool)
+                    )
+
+                    # --- ARTERY (class = 1) ---
+                    g_art = gt == 1
+                    if g_art.any():
+                        p_art = pred_pre == 1
+                        inter_a = np.logical_and(p_art, g_art).sum()
+                        denom_a = p_art.sum() + g_art.sum()
+                        dice_art = (
+                            2.0 * inter_a / (denom_a + 1e-5) if denom_a > 0 else 0.0
+                        )
+                        cldice_art = hard_cldice(
+                            p_art.astype(bool), g_art.astype(bool)
+                        )
+                    else:
+                        dice_art = 0.0
+                        cldice_art = 0.0
+
+                    # --- VEIN (class = 2) ---
+                    g_vein = gt == 2
+                    if g_vein.any():
+                        p_vein = pred_pre == 2
+                        inter_v = np.logical_and(p_vein, g_vein).sum()
+                        denom_v = p_vein.sum() + g_vein.sum()
+                        dice_vein = (
+                            2.0 * inter_v / (denom_v + 1e-5) if denom_v > 0 else 0.0
+                        )
+                        cldice_vein = hard_cldice(
+                            p_vein.astype(bool), g_vein.astype(bool)
+                        )
+                    else:
+                        dice_vein = 0.0
+                        cldice_vein = 0.0
+
+                    case_name = image_path.name.split(".")[0]
+                    logger.info(
+                        f"[pre] {case_name}: "
+                        f"Dice(vessel)={dice_vessel:.4f} clDice(vessel)={cldice_vessel:.4f} "
+                        f"Dice(art)={dice_art:.4f} clDice(art)={cldice_art:.4f} "
+                        f"Dice(vein)={dice_vein:.4f} clDice(vein)={cldice_vein:.4f}"
+                    )
+
+                    # Store metrics (these are what the mean summary uses)
+                    metrics_dict[case_name] = {
+                        "dice_vessel": torch.tensor(dice_vessel),
+                        "cldice_vessel": torch.tensor(cldice_vessel),
+                        "dice_art": torch.tensor(dice_art),
+                        "cldice_art": torch.tensor(cldice_art),
+                        "dice_vein": torch.tensor(dice_vein),
+                        "cldice_vein": torch.tensor(cldice_vein),
+                        # keep these aliases for backwards compatibility if needed
+                        "dice": torch.tensor(dice_vessel),
+                        "cldice": torch.tensor(cldice_vessel),
+                    }
+            # --- END metrics in PREPROCESSED space ---
 
             # If we know the raw image location, resample label to raw geometry
             raw_nii = None
@@ -563,74 +637,6 @@ def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
             nib.save(pred_nii, str(out_path))
             logger.info(f"Saved prediction to {out_path}")
 
-            # Metrics if GT masks are available
-            if mask_paths is not None and mask_np is not None:
-                # label: (D, H, W) with {0:bg, 1:artery, 2:vein}
-                # mask_np: (D, H, W) with {0:bg, 1:artery, 2:vein}
-
-                # UNION (A ∪ V)
-                union_pred = label > 0
-                union_gt = mask_np > 0
-
-                inter_u = np.logical_and(union_pred, union_gt).sum()
-                denom_u = union_pred.sum() + union_gt.sum()
-                dice_union = (
-                    2.0 * inter_u / (denom_u + 1e-5) if denom_u > 0 else 0.0
-                )
-                cldice_union = hard_cldice(
-                    union_pred.astype(bool), union_gt.astype(bool)
-                )
-
-                # ARTERY (class = 1)
-                g_art = mask_np == 1
-                if g_art.any():
-                    p_art = label == 1
-                    inter_a = np.logical_and(p_art, g_art).sum()
-                    denom_a = p_art.sum() + g_art.sum()
-                    dice_art = (
-                        2.0 * inter_a / (denom_a + 1e-5) if denom_a > 0 else 0.0
-                    )
-                    cldice_art = hard_cldice(
-                        p_art.astype(bool), g_art.astype(bool)
-                    )
-                else:
-                    dice_art = 0.0
-                    cldice_art = 0.0
-
-                # VEIN (class = 2)
-                g_vein = mask_np == 2
-                if g_vein.any():
-                    p_vein = label == 2
-                    inter_v = np.logical_and(p_vein, g_vein).sum()
-                    denom_v = p_vein.sum() + g_vein.sum()
-                    dice_vein = (
-                        2.0 * inter_v / (denom_v + 1e-5) if denom_v > 0 else 0.0
-                    )
-                    cldice_vein = hard_cldice(
-                        p_vein.astype(bool), g_vein.astype(bool)
-                    )
-                else:
-                    dice_vein = 0.0
-                    cldice_vein = 0.0
-
-                case_name = image_path.name.split(".")[0]
-                logger.info(
-                    f"{case_name}: "
-                    f"Dice(A∪V)={dice_union:.4f} clDice(A∪V)={cldice_union:.4f} "
-                    f"Dice(art)={dice_art:.4f} clDice(art)={cldice_art:.4f} "
-                    f"Dice(vein)={dice_vein:.4f} clDice(vein)={cldice_vein:.4f}"
-                )
-
-                # Store all six metrics
-                metrics_dict[case_name] = {
-                    "dice": torch.tensor(dice_union),
-                    "cldice": torch.tensor(cldice_union),
-                    "dice_art": torch.tensor(dice_art),
-                    "cldice_art": torch.tensor(cldice_art),
-                    "dice_vein": torch.tensor(dice_vein),
-                    "cldice_vein": torch.tensor(cldice_vein),
-                }
-
     # Summarize over all images
     if mask_paths is not None and len(metrics_dict) > 0:
         metric_names = list(next(iter(metrics_dict.values())).keys())
@@ -639,8 +645,9 @@ def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
             vals = [metrics_dict[k][m].item() for k in metrics_dict]
             mean_metrics[m] = float(np.mean(vals))
 
-        logger.info(f"Mean Dice(A∪V): {mean_metrics['dice']:.4f}")
-        logger.info(f"Mean clDice(A∪V): {mean_metrics['cldice']:.4f}")
+        # Per-class means
+        logger.info(f"Mean Dice(vessel): {mean_metrics['dice_vessel']:.4f}")
+        logger.info(f"Mean clDice(vessel): {mean_metrics['cldice_vessel']:.4f}")
         logger.info(f"Mean Dice(art): {mean_metrics['dice_art']:.4f}")
         logger.info(f"Mean clDice(art): {mean_metrics['cldice_art']:.4f}")
         logger.info(f"Mean Dice(vein): {mean_metrics['dice_vein']:.4f}")
@@ -728,7 +735,7 @@ def main():
             out_images_dir=preproc_images_dir,
             out_labels_dir=preproc_labels_dir,
             target_spacing=(1.0, 1.0, 1.0),
-            clip_range=(-1000.0, 600.0),
+            clip_range=(-1000.0, 400.0),
             do_zscore=False,
             crop_mode="none",  # keep full FOV for inference
             crop_margin=10,
@@ -747,7 +754,7 @@ def main():
 
     GlobalHydra.instance().clear()
     with initialize_config_dir(config_dir=str(config_dir), job_name="eval_inference"):
-        cfg = compose(config_name="inference")
+        cfg = compose(config_name="eval_inference")
 
     # Allow dynamic insertion of new keys
     OmegaConf.set_struct(cfg, False)

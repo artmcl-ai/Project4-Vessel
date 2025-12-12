@@ -20,6 +20,7 @@ from huggingface_hub import hf_hub_download
 from monai.inferers import SlidingWindowInfererAdapt
 from skimage.morphology import remove_small_objects
 from skimage.exposure import equalize_hist
+from scipy.ndimage import zoom as nd_zoom
 
 from vesselfm.seg.utils.data import generate_transforms
 from vesselfm.seg.utils.io import determine_reader_writer
@@ -275,6 +276,20 @@ def resample(image, factor=None, target_shape=None):
         new_d, new_h, new_w = int(round(d / factor)), int(round(h / factor)), int(round(w / factor))
     return F.interpolate(image, size=(new_d, new_h, new_w), mode="trilinear", align_corners=False)
 
+
+def resample_mask_to_spacing(mask, src_spacing, tgt_spacing, order=0):
+    """
+    Resample a 3D mask from src_spacing to tgt_spacing using nearest-neighbor (order=0).
+
+    mask: (X, Y, Z) np.ndarray (integer labels)
+    src_spacing, tgt_spacing: iterables of length 3 (sx, sy, sz)
+    """
+    src_spacing = np.array(src_spacing, dtype=np.float32)
+    tgt_spacing = np.array(tgt_spacing, dtype=np.float32)
+    zoom_factors = src_spacing / tgt_spacing  # Same convention as preprocess_av_ct_nii
+    return nd_zoom(mask, zoom_factors, order=order)
+
+
 @hydra.main(config_path="configs", config_name="inference", version_base="1.3.2")
 def main(cfg):
     # seed libraries
@@ -398,31 +413,85 @@ def main(cfg):
             # Label is a numpy array (D, H, W) in model/reader order
             label_np = label.astype(np.uint8)
 
-            # Load the original CT as reference for affine + header
-            ref_nii = nib.load(str(image_path))
-            ref_shape = ref_nii.shape
+            # Geometry handling
+            # Preprocessed reference (the volume actually fed into the model)
+            pre_nii = nib.load(str(image_path))
+            pre_shape = pre_nii.shape
+            pre_spacing = pre_nii.header.get_zooms()[:3]
 
-            # If shape is (D,H,W)=(234,186,247) but ref is (247,186,234),
-            # swap axes 0 and 2 so we match nibabel's (X,Y,Z).
-            if (
-                label_np.shape != ref_shape and
-                label_np.shape[0] == ref_shape[2] and
-                label_np.shape[1] == ref_shape[1] and
-                label_np.shape[2] == ref_shape[0]
-            ):
-                # (D,H,W) -> (W,H,D) == (X,Y,Z)
-                label_np = np.transpose(label_np, (2, 1, 0))
-                logger.info(
-                    f"Transposed prediction from original shape to match ref shape {ref_shape}."
-                )
+            # RAW reference: same filename but in cfg.raw_image_dir
+            raw_image_dir = getattr(cfg, "raw_image_dir", None)
+            raw_nii = None
+            label_for_save = label_np  # default: save in preprocessed space
+            ref_nii = pre_nii          # default reference
 
+            if raw_image_dir not in (None, "", "null"):
+                raw_dir = Path(raw_image_dir)
+                raw_path = raw_dir / image_path.name
+
+                if raw_path.exists():
+                    raw_nii = nib.load(str(raw_path))
+                    raw_spacing = raw_nii.header.get_zooms()[:3]
+
+                    # Resample mask from pre spacing -> raw spacing
+                    mask_raw = resample_mask_to_spacing(
+                        label_np,
+                        src_spacing=pre_spacing,
+                        tgt_spacing=raw_spacing,
+                        order=0,  # nearest neighbor for labels
+                    ).astype(np.uint8)
+
+                    # If small size mismatch (rounding), crop/pad to raw_nii.shape
+                    if mask_raw.shape != raw_nii.shape:
+                        logger.warning(
+                            f"Resampled mask shape {mask_raw.shape} != raw image shape {raw_nii.shape}; "
+                            "cropping/padding to match."
+                        )
+                        out = np.zeros(raw_nii.shape, dtype=np.uint8)
+                        common = tuple(min(a, b) for a, b in zip(mask_raw.shape, out.shape))
+                        slices_out = tuple(slice(0, c) for c in common)
+                        slices_in = tuple(slice(0, c) for c in common)
+                        out[slices_out] = mask_raw[slices_in]
+                        mask_raw = out
+
+                    label_for_save = mask_raw
+                    ref_nii = raw_nii
+                else:
+                    logger.warning(
+                        f"Raw image not found at {raw_path}; "
+                        "saving prediction in preprocessed space instead."
+                    )
+                    ref_nii = pre_nii
+                    label_for_save = label_np
+            else:
+                # No raw_image_dir provided: save in preprocessed space,
+                if label_np.shape != pre_shape:
+                    # Common case: (D,H,W) vs (X,Y,Z) where only axis 0 and 2 differ
+                    if (
+                        label_np.shape[0] == pre_shape[2]
+                        and label_np.shape[1] == pre_shape[1]
+                        and label_np.shape[2] == pre_shape[0]
+                    ):
+                        label_np = np.transpose(label_np, (2, 1, 0))
+                        logger.info(
+                            f"Transposed prediction to match preprocessed shape {pre_shape}."
+                        )
+                    else:
+                        raise RuntimeError(
+                            f"Predicted mask shape {label_np.shape} does not match preprocessed image shape "
+                            f"{pre_shape} and is not a simple 0<->2 axis swap."
+                        )
+                label_for_save = label_np
+                ref_nii = pre_nii
+
+            # Save prediction in ref_nii space (raw if available, otherwise preprocessed)
             pred_nii = nib.Nifti1Image(
-                label_np,
+                label_for_save,
                 affine=ref_nii.affine,
                 header=ref_nii.header,
             )
 
-            # Keep sform/qform consistent
+            # Keep sform/qform consistent with reference image
             pred_nii.set_sform(
                 ref_nii.get_sform(),
                 code=ref_nii.get_sform(coded=True)[1] or 1
@@ -431,10 +500,6 @@ def main(cfg):
                 ref_nii.get_qform(),
                 code=ref_nii.get_qform(coded=True)[1] or 1
             )
-
-            # Make sure sform/qform are consistent
-            pred_nii.set_sform(ref_nii.get_sform(), code=ref_nii.get_sform(coded=True)[1] if ref_nii.get_sform(coded=True)[1] else 1)
-            pred_nii.set_qform(ref_nii.get_qform(), code=ref_nii.get_qform(coded=True)[1] if ref_nii.get_qform(coded=True)[1] else 1)
 
             out_path = output_folder / f"{image_path.name.split('.')[0]}_{cfg.file_app}pred.nii.gz"
             nib.save(pred_nii, str(out_path))

@@ -1,0 +1,79 @@
+defaults:
+  - hydra: default
+  - model: dyn_unet_base
+  - _self_
+
+# ------------------------------
+# I/O – paths are placeholders
+# ------------------------------
+# These are overwritten in eval_inference.py main() using the CLI args.
+data:
+  image_dir: null      # will be set to /tmp/av_preprocessed/images
+  mask_dir: null       # will be set to /tmp/av_preprocessed/labels (if labels_dir given)
+
+output_folder: null    # will be set to the CLI output_dir
+
+image_file_ending: nii.gz
+file_app: ""           # suffix for prediction filenames
+round_to: 2
+
+# ------------------------------
+# Model & checkpoint
+# ------------------------------
+device: cuda:0
+ckpt_path: /app/checkpoints/av_ct_best_cldice.pt
+
+# DynUNet config is loaded from model: dyn_unet_base
+# Only override the number of output channels for A/V/BG
+model:
+  out_channels: 3
+
+# ------------------------------
+# Sliding window inferer
+# ------------------------------
+batch_size: 3
+patch_size: [96, 96, 96]
+overlap: 0.5
+mode: "constant"
+sigma_scale: 0.125
+padding_mode: "constant"
+
+# ------------------------------
+# Eval & reproducibility
+# ------------------------------
+seed: 404
+
+# ------------------------------
+# Standard pre-processing transforms
+# (applied AFTER preprocessing script; this is the MONAI transform chain)
+# ------------------------------
+transforms_config:
+  - EnsureChannelFirst:
+      channel_dim: "no_channel"
+  - ToTensor:
+      device: null
+
+# ------------------------------
+# Test-time augmentation
+# ------------------------------
+tta:
+  scales: [1.0]     # can enable [0.5, 1.0, 1.5] later
+  invert: false
+  invert_mean_thresh: 0.5
+  equalize_hist: false
+  hist_bins: 100
+
+# ------------------------------
+# Post-processing
+# ------------------------------
+post:
+  apply: false
+  small_objects_min_size: 500
+  small_objects_connectivity: 3
+
+# ------------------------------
+# Merging
+# ------------------------------
+merging:
+  threshold: 0.5
+  max: false
