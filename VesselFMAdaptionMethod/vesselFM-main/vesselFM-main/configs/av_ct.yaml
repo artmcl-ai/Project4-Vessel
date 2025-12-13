@@ -68,7 +68,7 @@ optim:
   val_cldice_workers: 8 
   epochs_stage1: 40
   epochs_stage2: 30
-  batch_size: 3
+  batch_size: 2
   amp: true
   lr_av_refine: 1.0e-4       # LR for AV refine head
   epochs_av_refine: 30       # Number of refine epochs (set 0 to disable)

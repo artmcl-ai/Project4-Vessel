@@ -4,10 +4,10 @@ experiment: vessel_ct
 seed: 42
 
 data:
-  train_images: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesTr_pre
-  train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsTr_pre
-  val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal_pre
-  val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal_pre
+  train_images: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesTr_pre2
+  train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsTr_pre2
+  val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal_pre2
+  val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal_pre2
   preprocessed: true
   patch_size: [96, 96, 96]
   samples_per_volume: 8
@@ -20,7 +20,7 @@ data:
 model:
   num_classes: 3        # Keep 3-class head, use vessel_head on top
   dropout: 0.1
-  pretrain_ckpt: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/vesselfm_finetuned2.pt
+  pretrain_ckpt: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/vesselFM_base.pt
 
 loss:
   # Relative weights for BCE vs clDice on vessel_head
@@ -33,7 +33,7 @@ optim:
   weight_decay: 5.0e-6
   val_cldice_workers: 16
   epochs: 80
-  batch_size: 3
+  batch_size: 2
   amp: true
 
 augment:
