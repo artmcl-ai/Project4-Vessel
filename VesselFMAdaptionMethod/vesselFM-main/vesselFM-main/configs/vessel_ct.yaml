@@ -15,7 +15,7 @@ data:
   artery_patch_prob: 0.5
   min_artery_fraction: 0.005
   mixed_av_patch_prob: 0.3
-  num_workers: 16
+  num_workers: 8
 
 model:
   num_classes: 3        # Keep 3-class head, use vessel_head on top
@@ -31,9 +31,9 @@ loss:
 optim:
   lr: 3.0e-4
   weight_decay: 5.0e-6
-  val_cldice_workers: 16
+  val_cldice_workers: 8
   epochs: 80
-  batch_size: 2
+  batch_size: 3
   amp: true
 
 augment:
