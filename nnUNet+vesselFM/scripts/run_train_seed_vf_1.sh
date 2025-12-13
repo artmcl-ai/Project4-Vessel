@@ -33,14 +33,14 @@ export nnUNet_random_seed="${TRUE_SEED}"
 
 echo "Scratch + env set. Starting training…" 
 
-nnUNetv2_train Dataset001_nnunet 3d_fullres 0
+nnUNetv2_train Dataset003_vesselfm_good 3d_fullres 0
 
-mkdir -p "$PROJECT_ROOT/data/nnUNet_results/Dataset001_nnunet/seed_${SEED_ID}"
-rsync -a "${SCRATCH_ROOT}/nnUNet_results/seed_${SEED_ID}/" "${PROJECT_ROOT}/data/nnUNet_results/Dataset001_nnunet/seed_${SEED_ID}/"
+mkdir -p "$PROJECT_ROOT/data/nnUNet_results/Dataset003_vesselfm_good/seed_${SEED_ID}"
+rsync -a "${SCRATCH_ROOT}/nnUNet_results/seed_${SEED_ID}/" "${PROJECT_ROOT}/data/nnUNet_results/Dataset003_vesselfm_good/seed_${SEED_ID}/"
 
-if [[ -n "${SCRATCH_ROOT:-}" && -d "$SCRATCH_ROOT" && "$SCRATCH_ROOT" == "/scratch/nnunet_${JOB_ID}_seed${SEED_ID}" ]]; then
-    rm -rf -- "$SCRATCH_ROOT"
-    echo "Scratch cleaned: $SCRATCH_ROOT"
-else
-    echo "Skip cleanup (not matching expected path)"
-fi
+# if [[ -n "${SCRATCH_ROOT:-}" && -d "$SCRATCH_ROOT" && "$SCRATCH_ROOT" == "/scratch/nnunet_${JOB_ID}_seed${SEED_ID}" ]]; then
+#     rm -rf -- "$SCRATCH_ROOT"
+#     echo "Scratch cleaned: $SCRATCH_ROOT"
+# else
+#     echo "Skip cleanup (not matching expected path)"
+# fi

@@ -13,7 +13,7 @@ PROJECT_ROOT="/projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM"
 
 PRED_ROOT="${PROJECT_ROOT}/data/nnUNet_results/Dataset001_nnunet/preds"
 
-OUTPUT_ENSEMBLE="${PRED_ROOT}/ensemble_seed1-9"
+OUTPUT_ENSEMBLE="${PRED_ROOT}/ensemble_seed1-10"
 
 GT_DIR="${PROJECT_ROOT}/data/nnUNet_raw/Dataset001_nnunet/labelsTs"
 
@@ -25,14 +25,14 @@ echo "[INFO] Activating conda env: ${CONDA_ENV}"
 conda activate "${CONDA_ENV}"
 
 echo "[INFO] Checking seed prediction folders..."
-for s in {1..9}; do
+for s in {1..10}; do
   d="${PRED_ROOT}/seed_${s}"
   if [ ! -d "$d" ]; then
     echo "[ERROR] Missing prediction folder: $d"
     exit 1
   fi
 done
-echo "[OK] All seed_1..seed_9 folders found."
+echo "[OK] All seed_1..seed_10 folders found."
 
 if [ ! -d "${GT_DIR}" ]; then
   echo "[ERROR] Ground-truth folder not found: ${GT_DIR}"
@@ -53,6 +53,7 @@ nnUNetv2_ensemble -i \
   "${PRED_ROOT}/seed_7" \
   "${PRED_ROOT}/seed_8" \
   "${PRED_ROOT}/seed_9" \
+  "${PRED_ROOT}/seed_10" \
   -o "${OUTPUT_ENSEMBLE}"
 
 echo "[OK] Ensemble done."
@@ -60,10 +61,14 @@ echo "[OK] Ensemble done."
 METRICS_JSON="${OUTPUT_ENSEMBLE}/metrics.json"
 echo "[INFO] Evaluating Dice -> ${METRICS_JSON}"
 
-nnUNetv2_evaluate_folder \
-  -pred "${OUTPUT_ENSEMBLE}" \
-  -gt   "${GT_DIR}" \
-  -json "${METRICS_JSON}"
+PFILE="/projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_results/Dataset001_nnunet/seed_1/Dataset001_nnunet/nnUNetTrainer__nnUNetPlans__3d_fullres/plans.json"
+DJFILE="/projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_raw/Dataset001_nnunet/dataset.json"
+PRED_DIR="/projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/data/nnUNet_results/Dataset001_nnunet/preds/ensemble_seed1-10"
+
+nnUNetv2_evaluate_folder "$GT_DIR" "$PRED_DIR" \
+  -djfile "$DJFILE" \
+  -pfile "$PFILE" \
+  -o "$PRED_DIR/metrics.json"
 
 echo "[OK] Evaluation finished."
 echo "[INFO] Results saved to: ${METRICS_JSON}"
