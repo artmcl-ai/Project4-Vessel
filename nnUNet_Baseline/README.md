@@ -73,7 +73,7 @@ singularity run --nv \
   -i <INPUT_NII_OR_DIR> \
   -o <OUTPUT_DIR>
 ```
-One used example in nnUNet Baseline/scripts/docker_test_1.sh
+One used example in [here](nnUNet_Baseline/scripts/docker_test_1.sh)
 
 ## Note
 
