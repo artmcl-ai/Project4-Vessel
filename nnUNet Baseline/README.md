@@ -22,10 +22,13 @@ Pipeline:
 - Labels: `case_xxxx.nii.gz` with class IDs above
 
 ## Required Environment Variables
-Set nnU-Net paths:
+Set nnU-Net paths(Already set in docker):
 - `nnUNet_raw`
 - `nnUNet_preprocessed`
 - `nnUNet_results`
+
+## Input
+- CT images: `.nii.gz`
 
 ## Outputs
 - Predicted masks: `.nii.gz` (same geometry as input)
@@ -74,6 +77,6 @@ One used example in nnUNet Baseline/scripts/docker_test_1.sh
 
 ## Note
 
-You can find images from https://hub.docker.com/r/mzou2000/nnunet-5seed-predict
+You can find images from https://hub.docker.com/r/mzou2000/nnunet-10seed-predict
 
 Also, you can find sif images in /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/result/nnunet_baseline.sif
