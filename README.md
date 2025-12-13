@@ -25,6 +25,13 @@ Each folder contains the code required for model development, training, and eval
   Contains Jupyter notebooks used to generate metrics, tables, figures, etc. seen in the report
 
 ---
+##  Docker for nnUNet Baseline
+
+The Docker Image for the nnUNet Baseline can be accessed from https://hub.docker.com/r/mzou2000/nnunet-10seed-predict
+
+##  Docker for nnUNet+VesselFM
+
+The Docker Image for the nnUNet Baseline can be accessed from https://hub.docker.com/r/mzou2000/nnunet-5seed-predict
 
 ##  Docker for GNN Approach
 
