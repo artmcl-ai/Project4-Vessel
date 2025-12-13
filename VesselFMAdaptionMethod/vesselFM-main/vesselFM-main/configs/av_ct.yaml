@@ -3,10 +3,10 @@ experiment: av_ct
 seed: 42
 
 data:
-  train_images: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesTr_pre
-  train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsTr_pre
-  val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal_pre
-  val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal_pre
+  train_images: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesTr_pre2
+  train_labels: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsTr_pre2
+  val_images:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/imagesVal_pre2
+  val_labels:   /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/data/labelsVal_pre2
   preprocessed: true
   spacing: null # [1.0, 1.0, 1.0]
   clip_hu: null # [-1000, 600]
@@ -66,12 +66,12 @@ optim:
   lr_stage2: 3.0e-5 # Was 3.0e-5
   weight_decay: 5.0e-6 # Was 1.0e-5
   val_cldice_workers: 8 
-  epochs_stage1: 40
-  epochs_stage2: 30
+  epochs_stage1: 60
+  epochs_stage2: 50
   batch_size: 2
   amp: true
   lr_av_refine: 1.0e-4       # LR for AV refine head
-  epochs_av_refine: 30       # Number of refine epochs (set 0 to disable)
+  epochs_av_refine: 50       # Number of refine epochs (set 0 to disable)
 
 augment:
   gamma: [0.8, 1.2] # Was [0.7, 1.5]
