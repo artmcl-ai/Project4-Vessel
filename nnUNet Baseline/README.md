@@ -70,4 +70,10 @@ singularity run --nv \
   -i <INPUT_NII_OR_DIR> \
   -o <OUTPUT_DIR>
 ```
+One used example in nnUNet Baseline/scripts/docker_test_1.sh
 
+## Note
+
+You can find images from https://hub.docker.com/r/mzou2000/nnunet-5seed-predict
+
+Also, you can find sif images in /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/result/nnunet_baseline.sif
