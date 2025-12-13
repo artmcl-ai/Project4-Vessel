@@ -29,9 +29,13 @@ Each folder contains the code required for model development, training, and eval
 
 The Docker Image for the nnUNet Baseline can be accessed from https://hub.docker.com/r/mzou2000/nnunet-10seed-predict
 
+For the working detail can be found [here](nnUNet Baseline/README.md)
+
 ##  Docker for nnUNet+VesselFM
 
 The Docker Image for the nnUNet Baseline can be accessed from https://hub.docker.com/r/mzou2000/nnunet-5seed-predict
+
+For the working detail can be found [here](nnUNet+vesselFM/README.md) 
 
 ##  Docker for GNN Approach
 
