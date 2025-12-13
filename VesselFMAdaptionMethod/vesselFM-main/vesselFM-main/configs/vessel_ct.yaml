@@ -24,9 +24,9 @@ model:
 
 loss:
   # Relative weights for BCE vs clDice on vessel_head
-  vessel_bce_weight: 0.3        # ↓ CE/BCE influence
-  vessel_cldice_weight: 1.2     # ↑ clDice importance
-  soft_cldice_iters: 3          # more skeleton/refinement steps
+  vessel_bce_weight: 0.6
+  vessel_cldice_weight: 1.0
+  soft_cldice_iters: 2
 
 optim:
   lr: 3.0e-4
