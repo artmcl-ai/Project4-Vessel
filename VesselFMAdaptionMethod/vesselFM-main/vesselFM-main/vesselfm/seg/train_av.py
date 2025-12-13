@@ -438,7 +438,7 @@ def eval_epoch(
     cldice_cases_art = []
     cldice_cases_vein = []
 
-    ds_factor = 1  # Spatial downsample factor for clDice masks
+    ds_factor = 2  # Spatial downsample factor for clDice masks
 
     for batch in loader:
         img, lab = batch["image"].to(device), batch["label"].to(device).long()

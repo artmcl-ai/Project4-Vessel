@@ -13,13 +13,13 @@ data:
   zscore: false # True if not preprocessing
   patch_size: [96, 96, 96]
   samples_per_volume: 8          # Keep at 8
-  min_fg_fraction: 0.02          # Keep
+  min_fg_fraction: 0.03          # 0.02 -> 0.03
   artery_patch_prob: 0.4         # ↓ a bit from 0.5
   mixed_av_patch_prob: 0.3       # Still enough of A+V
   vein_patch_prob: 0.3           # ↑ so veins get equal attention
-  min_artery_fraction: 0.01      # ↑ – force more artery content
-  min_vein_fraction:   0.01
-  num_workers: 22
+  min_artery_fraction: 0.015     # 0.01 -> 0.015
+  min_vein_fraction: 0.015     # 0.01 -> 0.015
+  num_workers: 11
   labels:
     background: 0
     artery: 1
@@ -37,27 +37,27 @@ loss:
   class_weights: [0.10, 0.45, 0.45]
 
   use_soft_cldice: true
-  soft_cldice_weight_stage1: 0.2      # Keep union clDice modest in S1
-  soft_cldice_weight_stage2: 0.3      # Slightly lower than 0.5 so per-class terms matter more
-  soft_cldice_iters: 2
+  soft_cldice_weight_stage1: 0.3   # 0.2 -> 0.3
+  soft_cldice_weight_stage2: 0.45  # 0.3 -> 0.45
+  soft_cldice_iters: 3             # 2 -> 3
 
   # Extra A/V-specific loss (second head)
-  av_head_weight: 1.0
+  av_head_weight: 0.5        # 1.0 -> 0.5
   # Make arteries a bit more important in the A/V head
   av_class_weights: [0.55, 0.45]        # Artery, vein
 
   # Per-class clDice weights – emphasize artery
-  soft_cldice_weight_art: 0.18         # ↑ from 0.1
-  soft_cldice_weight_vein: 0.18        # Keep veins stable
+  soft_cldice_weight_art: 0.25
+  soft_cldice_weight_vein: 0.25
 
   # Vessel consistency – keep but slightly lower so it doesn’t over-dominate
-  vessel_consistency_weight: 0.05     # ↓ from 0.1
+  vessel_consistency_weight: 0.08     # ↓ from 0.1
 
   # Focal + Tversky for A/V head
-  av_focal_gamma: 1.3
+  av_focal_gamma: 1.0
   av_use_tversky: true
-  av_tversky_alpha: 0.3
-  av_tversky_beta: 0.7
+  av_tversky_alpha: 0.4
+  av_tversky_beta: 0.6
 
   # For the AV refine head (stage 3)
   av_refine_class_weights: [0.55, 0.45]   # Artery, vein
@@ -66,7 +66,7 @@ optim:
   lr_stage1: 3.0e-4 # Was 3.0e-4
   lr_stage2: 3.0e-5 # Was 3.0e-5
   weight_decay: 5.0e-6 # Was 1.0e-5
-  val_cldice_workers: 22 
+  val_cldice_workers: 11 
   epochs_stage1: 60
   epochs_stage2: 50
   batch_size: 2
@@ -85,4 +85,4 @@ augment:
 inference:
   tta: false
   sigmoid_threshold: 0.5
-  keep_small_cc_voxels: 50
+  keep_small_cc_voxels: 100

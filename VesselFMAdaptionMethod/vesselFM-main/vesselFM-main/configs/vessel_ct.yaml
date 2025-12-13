@@ -15,7 +15,7 @@ data:
   artery_patch_prob: 0.5
   min_artery_fraction: 0.005
   mixed_av_patch_prob: 0.3
-  num_workers: 8
+  num_workers: 22
 
 model:
   num_classes: 3        # Keep 3-class head, use vessel_head on top
@@ -24,15 +24,15 @@ model:
 
 loss:
   # Relative weights for BCE vs clDice on vessel_head
-  vessel_bce_weight: 0.5
-  vessel_cldice_weight: 1.0
-  soft_cldice_iters: 2
+  vessel_bce_weight: 0.3        # ↓ CE/BCE influence
+  vessel_cldice_weight: 1.2     # ↑ clDice importance
+  soft_cldice_iters: 3          # more skeleton/refinement steps
 
 optim:
   lr: 3.0e-4
   weight_decay: 5.0e-6
-  val_cldice_workers: 8
-  epochs: 80
+  val_cldice_workers: 22
+  epochs: 100
   batch_size: 2
   amp: true
 
