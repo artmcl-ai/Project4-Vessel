@@ -1,1 +1,0 @@
-This is the adaption of VesselFM for artery and vein segmentation.
