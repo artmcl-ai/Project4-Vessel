@@ -42,11 +42,26 @@ All model architecture and most utility code are copied from the public vesselFM
   - Applies class-balanced losses to compensate for artery/vein class imbalance.
   - Tracks per-class Dice and clDice and saves the best 3-class checkpoint.
 
+- `preprocess_av_ct_nii.py`
+  Preprocessing script for images and labels for both validation and training sets:
+  - Performs intensity normalization by either z score or percentile method (defined at runtime call).
+  - Sets spacing to 1 mm, 1 mm, 1 mm.
+  - Crops by factor of 10 for training set, no crop for validation.
+  - Performs HU clip by specifying range at runtime call.
+
+- `eval_preprocessing_av_ct_nii.py`
+  Preprocessing script for images and labels for both validation and training sets (same as preprocess_av_ct_nii.py, just configured to work automatically with eval_inference.py):
+  - Performs intensity normalization by either z score or percentile method (defined at runtime call).
+  - Sets spacing to 1 mm, 1 mm, 1 mm.
+  - Crops by factor of 10 for training set, no crop for validation.
+  - Performs HU clip by specifying range at runtime call.
+
 - `finetune_vesselfm.py`  
   Baseline fine-tuning script that follows the original vesselFM training procedure as closely as possible, but targets the CT dataset. Useful for ablation versus the custom `train_vessel.py` / `train_av.py` pipeline.
 
 - `eval_inference.py`  
   Standalone evaluation script for a trained 3-class A/V model. Responsibilities:
+  - For Docker Image.
   - Loads a trained checkpoint (usually produced by `train_av.py`).
   - Runs full-volume inference using sliding-window tiling but without any random cropping of evaluation images.
   - Writes out predicted multi-class NIfTI masks to an output directory.
@@ -73,7 +88,7 @@ All model architecture and most utility code are copied from the public vesselFM
   - `hard_cldice` and related helpers for computing clDice metrics on binarized predictions.  
   These functions are imported by the training and evaluation scripts to complement standard Dice loss.
 
-> All other modules under `vesselfm/` are unchanged from the upstream project and are not documented here individually. They include the core network definitions, configuration helpers, and support utilities provided by the original vesselFM authors.
+> All other modules under `vesselfm/` are either unchanged from the upstream project or are slightly modified, and are not documented here individually. They include the core network definitions, configuration helpers, and support utilities provided by the original vesselFM authors.
 
 ## Top Workflow
 
