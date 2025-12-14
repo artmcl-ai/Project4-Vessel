@@ -20,7 +20,7 @@ device: cuda:0
 ckpt_path: /projectnb/ec500kb/projects/Fall_2025_Projects/Project_4_VesselFM/VesselFMAdaptationMethod/vesselFM-main/vesselFM-main/checkpoints/av_ct_best_cldice.pt
 
 # sliding window inferer
-batch_size: 3
+batch_size: 2
 patch_size: [96, 96, 96]
 overlap: 0.5
 mode: "constant"
@@ -28,7 +28,7 @@ sigma_scale: 0.125
 padding_mode: "constant"
 
 # eval & reproducibility
-seed: 404
+seed: 42
 
 # standard pre-processing transforms
 transforms_config:
