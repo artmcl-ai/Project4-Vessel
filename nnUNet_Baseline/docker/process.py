@@ -1,24 +1,26 @@
 #!/usr/bin/env python3
 """
-nnUNet 5-Seed Ensemble Prediction with VesselFM
+nnUNet 10-Seed Ensemble Prediction with Non-Standard Filename Support
 """
 
 import os
 import sys
+import re
 import shutil
+import hashlib
 import argparse
 import subprocess
 import tempfile
 from pathlib import Path
+
 
 # Configuration
 WORKSPACE = Path("/workspace")
 NNUNET_RAW = WORKSPACE / "data/nnUNet_raw"
 NNUNET_PREPROCESSED = WORKSPACE / "data/nnUNet_preprocessed"
 NNUNET_RESULTS = WORKSPACE / "nnUNet_results"
-DATASET_NAME = "Dataset003_vesselfm_good"
-NUM_SEEDS = 5
-VESSELFM_MODEL_PATH = WORKSPACE / "vesselfm_finetuned_monai.pt"
+DATASET_NAME = "Dataset001_nnunet"
+NUM_SEEDS = 10
 
 
 def setup_environment():
@@ -28,37 +30,52 @@ def setup_environment():
     os.environ["nnUNet_results"] = str(NNUNET_RESULTS)
 
 
-def prepare_dual_channel_input(input_path: Path, temp_dir: Path):
-    """Prepare dual-channel input (CT + VesselFM) using isolated subprocess."""
-    input_temp = temp_dir / "input_dual_channel"
+def prepare_input_files(input_path: Path, temp_dir: Path):
+    """
+    Prepare input files for nnUNet prediction.
+    Handles non-standard filenames by renaming to nnUNet convention and creating a mapping.
+    """
+    input_temp = temp_dir / "input"
     input_temp.mkdir(parents=True, exist_ok=True)
 
-    # Run VesselFM in completely isolated subprocess to avoid CUDA conflicts
-    probability_maker_script = WORKSPACE.parent / "nnunet_vesselfm" / "tools" / "probablity_maker.py"
+    if input_path.is_file():
+        if not str(input_path).endswith('.nii.gz'):
+            raise ValueError(f"Input must be .nii.gz format: {input_path}")
+        input_files = [input_path]
+    elif input_path.is_dir():
+        input_files = sorted(input_path.glob("*.nii.gz"))
+        if not input_files:
+            raise ValueError(f"No .nii.gz files found in {input_path}")
+    else:
+        raise ValueError(f"Input does not exist: {input_path}")
 
-    if not probability_maker_script.exists():
-        # Fallback: try relative to current file
-        probability_maker_script = Path(__file__).parent / "tools" / "probablity_maker.py"
+    print(f"Processing {len(input_files)} file(s)...")
 
-    if not probability_maker_script.exists():
-        raise FileNotFoundError(f"Could not find probablity_maker.py at {probability_maker_script}")
+    filename_mapping = {}
 
-    cmd = [
-        sys.executable,
-        str(probability_maker_script),
-        "-i", str(input_path),
-        "-o", str(input_temp),
-        "-m", str(VESSELFM_MODEL_PATH),
-    ]
+    for input_file in input_files:
+        original_name = input_file.name
+        case_name = input_file.stem.replace('.nii', '')
 
-    print("Running VesselFM preprocessing in isolated subprocess...")
-    result = subprocess.run(cmd, check=True)
+        if not case_name.endswith('_0000'):
+            match = re.search(r'(\d+)', case_name)
+            if match:
+                numeric_index = int(match.group(1))
+                standardized_name = f"case_{numeric_index:04d}_0000.nii.gz"
+            else:
+                hash_val = int(hashlib.md5(case_name.encode()).hexdigest()[:4], 16) % 10000
+                standardized_name = f"case_{hash_val:04d}_0000.nii.gz"
+            print(f"  Renaming: {original_name} -> {standardized_name}")
+        else:
+            standardized_name = f"{case_name}.nii.gz"
 
-    if result.returncode != 0:
-        raise RuntimeError(f"VesselFM preprocessing failed with code {result.returncode}")
+        shutil.copy(input_file, input_temp / standardized_name)
 
-    print("VesselFM preprocessing complete.\n")
-    return input_temp
+        standardized_base = standardized_name.replace('_0000.nii.gz', '')
+        original_base = original_name.replace('.nii.gz', '')
+        filename_mapping[standardized_base] = original_base
+
+    return input_temp, filename_mapping
 
 
 def run_single_seed_prediction(seed_id: int, input_dir: Path, output_dir: Path):
@@ -111,8 +128,8 @@ def run_single_seed_prediction(seed_id: int, input_dir: Path, output_dir: Path):
             shutil.rmtree(temp_results)
 
 
-def run_ensemble_prediction(input_dir: Path, temp_dir: Path, output_dir: Path):
-    """Run 5-seed ensemble prediction."""
+def run_ensemble_prediction(input_dir: Path, temp_dir: Path, output_dir: Path, filename_mapping: dict):
+    """Run 10-seed ensemble prediction."""
     seed_output_dirs = []
     for seed_id in range(1, NUM_SEEDS + 1):
         seed_output = temp_dir / f"seed_{seed_id}_pred"
@@ -133,21 +150,26 @@ def run_ensemble_prediction(input_dir: Path, temp_dir: Path, output_dir: Path):
 
     subprocess.run(ensemble_cmd, check=True)
 
-    # Copy results
     output_dir.mkdir(parents=True, exist_ok=True)
     for result_file in ensemble_output.glob("*.nii.gz"):
-        output_name = result_file.name
-        for suffix in ['_0000', '_0001']:
-            output_name = output_name.replace(suffix, '')
+        standardized_name = result_file.stem.replace('.nii', '')
+
+        if standardized_name in filename_mapping:
+            original_name = filename_mapping[standardized_name]
+            output_name = f"{original_name}.nii.gz"
+            print(f"  Mapping result: {result_file.name} -> {output_name}")
+        else:
+            output_name = result_file.name
+
         shutil.copy(result_file, output_dir / output_name)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="nnUNet 5-Seed Ensemble with VesselFM")
+    parser = argparse.ArgumentParser(description="nnUNet 10-Seed Ensemble Prediction")
     parser.add_argument("-i", "--input", required=True, type=Path, help="Input file or directory")
     parser.add_argument("-o", "--output", required=True, type=Path, help="Output directory")
-    parser.add_argument("--temp-dir", type=str, nargs='?', const='auto', default=None,
-                        help="Temporary directory (default: /tmp, 'auto': /scratch/nnunet_pred)")
+    parser.add_argument("--temp-dir", type=str, default=None,
+                        help="Temporary directory for intermediate files (default: /tmp)")
 
     args = parser.parse_args()
 
@@ -156,20 +178,18 @@ def main():
     if not args.input.exists():
         raise ValueError(f"Input does not exist: {args.input}")
 
-    # Setup temp directory
     if args.temp_dir is None:
         temp_base = Path("/tmp")
-    elif args.temp_dir == 'auto':
-        temp_base = Path("/scratch/nnunet_pred")
-        temp_base.mkdir(parents=True, exist_ok=True)
     else:
         temp_base = Path(args.temp_dir)
         temp_base.mkdir(parents=True, exist_ok=True)
 
+    print(f"Using temporary directory: {temp_base}")
+
     with tempfile.TemporaryDirectory(dir=str(temp_base)) as temp_dir:
         temp_path = Path(temp_dir)
-        input_dual_channel = prepare_dual_channel_input(args.input, temp_path)
-        run_ensemble_prediction(input_dual_channel, temp_path, args.output)
+        input_temp, filename_mapping = prepare_input_files(args.input, temp_path)
+        run_ensemble_prediction(input_temp, temp_path, args.output, filename_mapping)
 
     print(f"\nResults saved to: {args.output}")
 
