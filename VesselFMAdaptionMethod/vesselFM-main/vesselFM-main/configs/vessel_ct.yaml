@@ -32,7 +32,7 @@ optim:
   lr: 3.0e-4
   weight_decay: 5.0e-6
   val_cldice_workers: 22
-  epochs: 100
+  epochs: 120
   batch_size: 2
   amp: true
 
