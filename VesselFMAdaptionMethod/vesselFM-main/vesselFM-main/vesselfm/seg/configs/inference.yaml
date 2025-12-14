@@ -26,7 +26,7 @@ overlap: 0.5
 mode: "constant"
 sigma_scale: 0.125
 padding_mode: "constant"
-use_av_refine: true
+use_av_refine: false
 
 # eval & reproducibility
 seed: 42
