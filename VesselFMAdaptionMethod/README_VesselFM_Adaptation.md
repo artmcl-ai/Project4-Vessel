@@ -110,4 +110,3 @@ docker run --gpus all \
   -v $PWD/output:/output \
   artmcl/vesselfm-av-eval
 ```
-```
