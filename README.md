@@ -41,7 +41,7 @@ For the more detail can be found [here](nnUNet+vesselFM/README.md)
 
 The Docker Image for the GNN approach can be accessed from: https://hub.docker.com/r/laith123/vessel-seg
 
-Run this command: docker run --gpus all -v %cd%\input2:/input -v %cd%\output2:/output vessel-seg
+Run this command: ```docker run --gpus all -v %cd%\input2:/input -v %cd%\output2:/output vessel-seg```
 
 where '%cd%\input2' represents the directory with your inputs & %cd%\output2 represents the directory where you want the prediction masks to be stored
 
@@ -55,9 +55,9 @@ The models are not stored in this repository, but they are contained in the imag
 
 The Docker Image for the GNN approach can be accessed from: [https://hub.docker.com/r/artmcl/vesselfm-av-eval](https://hub.docker.com/r/artmcl/vesselfm-av-eval)
 
-Run this command: docker run --gpus all -v %cd%\input2:/input -v %cd%\output2:/output vessel-seg
+Run this command: ```docker run --gpus all -v $PWD/input:/input $PWD/output:/output vesselfm-av-eval```
 
-where '%cd%\input2' represents the directory with your inputs & %cd%\output2 represents the directory where you want the prediction masks to be stored
+where '$PWD/input:/input' represents the directory with your inputs & $PWD/output:/output represents the directory where you want the prediction masks to be stored
 
 ENSURE THAT THESE DIRECTORIES EXIST if you do not create the directories and store your inputs in the input folder then the docker will not run! The inputs should be .nii.gz images of non-contrast CT images.
 
