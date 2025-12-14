@@ -11,6 +11,7 @@ In `False_Positive_and_Negative_Score.ipynb`, update the following variables:
 |---------|-------------|
 | `gt_img` | Path to the file containing your GT mask |
 | `recon_img` |Path to the file containing your prediction mask |
+| `gt_img` | Path to the file auto generate from nnunet ensemble|
 
 ***
 ***

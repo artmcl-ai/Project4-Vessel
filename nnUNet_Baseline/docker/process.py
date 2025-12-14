@@ -163,6 +163,12 @@ def run_ensemble_prediction(input_dir: Path, temp_dir: Path, output_dir: Path, f
 
         shutil.copy(result_file, output_dir / output_name)
 
+    # Copy metric.json if it exists
+    metric_json = ensemble_output / "metric.json"
+    if metric_json.exists():
+        shutil.copy(metric_json, output_dir / "metric.json")
+        print(f"  Copied metric.json to output directory")
+
 
 def main():
     parser = argparse.ArgumentParser(description="nnUNet 10-Seed Ensemble Prediction")
