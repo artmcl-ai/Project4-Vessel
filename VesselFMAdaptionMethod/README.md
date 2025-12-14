@@ -75,6 +75,28 @@ All model architecture and most utility code are copied from the public vesselFM
 
 > All other modules under `vesselfm/` are unchanged from the upstream project and are not documented here individually. They include the core network definitions, configuration helpers, and support utilities provided by the original vesselFM authors.
 
+## Top Workflow
+
+<img width="1008" height="533" alt="ModelLayout_TopFlow" src="https://github.com/user-attachments/assets/bf3ef9bb-5ac1-44a5-a931-cea457f81693" />
+
+### Stage 1 Training - train_vessel.py
+
+- Performing fine tuning of VesselFM base checkpoint through the use of the Vessel Head (binary segmentation).
+
+### Stage 2 Training - train_av.py
+
+#### S1 Training
+
+<img width="1015" height="710" alt="ModelLayout_TrainingS1" src="https://github.com/user-attachments/assets/0ef04ee1-f6e7-4b36-b4be-3e7a3bf5578d" />
+
+#### S2 Training
+
+<img width="1015" height="680" alt="ModelLayout_TrainingS2" src="https://github.com/user-attachments/assets/c58a071d-ec34-404f-a432-4abbe3bebcb7" />
+
+#### S3 Training
+
+<img width="1015" height="719" alt="ModelLayout_TrainingS3" src="https://github.com/user-attachments/assets/d9b8ce00-ba5c-4b3f-8562-4d4e43ac1fc7" />
+
 ## Typical workflows
 
 ### 1. Fine-tune vesselFM on CT vessels (binary warm-up)
