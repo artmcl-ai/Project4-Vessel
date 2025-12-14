@@ -451,7 +451,7 @@ def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
                     f"Transposed prediction from original shape to match preprocessed shape {pre_shape}."
                 )
             
-                        # --- Metrics in PREPROCESSED space (paper metrics) ---
+            # --- Metrics in PREPROCESSED space (paper metrics) ---
             if mask_paths is not None:
                 # GT in preprocessed space (from /tmp/av_preprocessed/labels)
                 gt_pre_nii = nib.load(str(mask_paths[idx]))
@@ -535,68 +535,58 @@ def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
 
             # If we know the raw image location, resample label to raw geometry
             raw_nii = None
-            if raw_source is not None:
-                raw_img_path = None
-                if raw_source.is_file():
-                    # Single-file mode: only valid if there's exactly one image
-                    if len(image_paths) == 1:
-                        raw_img_path = raw_source
-                    else:
+            if raw_source is not None and raw_source.is_file():
+                raw_nii = nib.load(str(raw_source))
+                raw_shape = raw_nii.shape
+
+                pre_spacing = pre_nii.header.get_zooms()[:3]
+                raw_spacing = raw_nii.header.get_zooms()[:3]
+
+                if (label_np.shape != raw_shape) or (pre_spacing != raw_spacing):
+                    logger.info(
+                        f"Resampling prediction from preprocessed spacing {pre_spacing} "
+                        f"to raw spacing {raw_spacing}."
+                    )
+                    # Resample prediction to raw spacing
+                    label_resampled = resample_to_spacing(
+                        label_np.astype(np.float32),
+                        src_spacing=pre_spacing,
+                        tgt_spacing=raw_spacing,
+                        order=0,  # nearest-neighbor for labels
+                    ).astype(np.uint8)
+
+                    label_np = label_resampled
+
+                    # Additional safety: if shapes still differ slightly due to rounding,
+                    # pad (but do NOT crop) to match raw_shape.
+                    if label_np.shape != raw_shape:
                         logger.warning(
-                            "raw_image_source is a file but multiple preprocessed images "
-                            "are present; cannot reliably map. "
-                            "Falling back to preprocessed geometry."
-                        )
-                elif raw_source.is_dir():
-                    cand = raw_source / image_path.name
-                    if cand.is_file():
-                        raw_img_path = cand
-                    else:
-                        logger.warning(
-                            f"Expected raw image at {cand} but file does not exist; "
-                            "falling back to preprocessed geometry for this case."
+                            f"Resampled label shape {label_np.shape} != raw shape {raw_shape}; "
+                            f"padding (no cropping) to match."
                         )
 
-                if raw_img_path is not None and raw_img_path.is_file():
-                    raw_nii = nib.load(str(raw_img_path))
-                    raw_shape = raw_nii.shape
-
-                    pre_spacing = pre_nii.header.get_zooms()[:3]
-                    raw_spacing = raw_nii.header.get_zooms()[:3]
-
-                    if (label_np.shape != raw_shape) or (pre_spacing != raw_spacing):
-                        logger.info(
-                            f"Resampling prediction from preprocessed spacing {pre_spacing} "
-                            f"to raw spacing {raw_spacing}."
-                        )
-                        # Use the same resampling logic as in preprocessing, but invert spacing
-                        label_resampled = resample_to_spacing(
-                            label_np.astype(np.float32),
-                            src_spacing=pre_spacing,
-                            tgt_spacing=raw_spacing,
-                            order=0,              # nearest-neighbor for labels
-                        ).astype(np.uint8)
-
-                        label_np = label_resampled
-
-                        # Additional safety: if shapes still differ slightly due to rounding,
-                        # crop or pad to match raw_shape.
-                        if label_np.shape != raw_shape:
-                            logger.warning(
-                                f"Resampled label shape {label_np.shape} != raw shape {raw_shape}; "
-                                f"cropping/padding to match."
+                        # If any dimension is larger than raw_shape, raise an error instead of cropping
+                        too_large = any(a > b for a, b in zip(label_np.shape, raw_shape))
+                        if too_large:
+                            raise RuntimeError(
+                                f"Resampled label shape {label_np.shape} is larger than raw shape "
+                                f"{raw_shape} in at least one dimension; cannot match without cropping."
                             )
-                            out_arr = np.zeros(raw_shape, dtype=label_np.dtype)
-                            min_shape = tuple(min(a, b) for a, b in zip(label_np.shape, raw_shape))
-                            src_slices = []
-                            dst_slices = []
-                            for a, b, m in zip(label_np.shape, raw_shape, min_shape):
-                                src_start = (a - m) // 2
-                                dst_start = (b - m) // 2
-                                src_slices.append(slice(src_start, src_start + m))
-                                dst_slices.append(slice(dst_start, dst_start + m))
-                            out_arr[tuple(dst_slices)] = label_np[tuple(src_slices)]
-                            label_np = out_arr
+
+                        # Compute symmetric padding per dimension
+                        pad_width = []
+                        for a, b in zip(label_np.shape, raw_shape):
+                            diff = b - a
+                            before = diff // 2
+                            after = diff - before
+                            pad_width.append((before, after))
+
+                        label_np = np.pad(
+                            label_np,
+                            pad_width=pad_width,
+                            mode="constant",
+                            constant_values=0,
+                        )
 
             # Choose reference NIfTI for saving (raw if available, else preprocessed)
             if raw_nii is not None:
