@@ -90,6 +90,19 @@ All model architecture and most utility code are copied from the public vesselFM
 
 > All other modules under `vesselfm/` are either unchanged from the upstream project or are slightly modified, and are not documented here individually. They include the core network definitions, configuration helpers, and support utilities provided by the original vesselFM authors.
 
+## VesselFM Credit
+
+```
+@InProceedings{Wittmann_2025_CVPR,
+    author    = {Wittmann, Bastian and Wattenberg, Yannick and Amiranashvili, Tamaz and Shit, Suprosanna and Menze, Bjoern},
+    title     = {vesselFM: A Foundation Model for Universal 3D Blood Vessel Segmentation},
+    booktitle = {Proceedings of the Computer Vision and Pattern Recognition Conference (CVPR)},
+    month     = {June},
+    year      = {2025},
+    pages     = {20874-20884}
+}
+```
+
 ## Top Workflow
 
 <img width="1008" height="533" alt="ModelLayout_TopFlow" src="https://github.com/user-attachments/assets/bf3ef9bb-5ac1-44a5-a931-cea457f81693" />
