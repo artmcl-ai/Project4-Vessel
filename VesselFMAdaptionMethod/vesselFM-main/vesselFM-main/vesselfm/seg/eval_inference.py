@@ -27,6 +27,7 @@ import torch.nn.functional as F
 import gdown
 import hydra
 from hydra import initialize_config_dir, compose
+from nibabel.processing import resample_from_to
 from hydra.core.global_hydra import GlobalHydra
 from omegaconf import OmegaConf
 from tqdm import tqdm
@@ -527,66 +528,54 @@ def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
                         "cldice_art": torch.tensor(cldice_art),
                         "dice_vein": torch.tensor(dice_vein),
                         "cldice_vein": torch.tensor(cldice_vein),
-                        # keep these aliases for backwards compatibility if needed
                         "dice": torch.tensor(dice_vessel),
                         "cldice": torch.tensor(cldice_vessel),
                     }
             # --- END metrics in PREPROCESSED space ---
 
-            # If we know the raw image location, resample label to raw geometry
+            # Resample label to raw geometry (world-coordinate safe)
             raw_nii = None
-            if raw_source is not None and raw_source.is_file():
-                raw_nii = nib.load(str(raw_source))
-                raw_shape = raw_nii.shape
+            raw_img_path = None
 
-                pre_spacing = pre_nii.header.get_zooms()[:3]
-                raw_spacing = raw_nii.header.get_zooms()[:3]
-
-                if (label_np.shape != raw_shape) or (pre_spacing != raw_spacing):
-                    logger.info(
-                        f"Resampling prediction from preprocessed spacing {pre_spacing} "
-                        f"to raw spacing {raw_spacing}."
-                    )
-                    # Resample prediction to raw spacing
-                    label_resampled = resample_to_spacing(
-                        label_np.astype(np.float32),
-                        src_spacing=pre_spacing,
-                        tgt_spacing=raw_spacing,
-                        order=0,  # nearest-neighbor for labels
-                    ).astype(np.uint8)
-
-                    label_np = label_resampled
-
-                    # Additional safety: if shapes still differ slightly due to rounding,
-                    # pad (but do NOT crop) to match raw_shape.
-                    if label_np.shape != raw_shape:
+            if raw_source is not None:
+                if raw_source.is_file():
+                    # Single-volume mode only
+                    if len(image_paths) == 1:
+                        raw_img_path = raw_source
+                    else:
                         logger.warning(
-                            f"Resampled label shape {label_np.shape} != raw shape {raw_shape}; "
-                            f"padding (no cropping) to match."
+                            "raw_image_source is a file but multiple preprocessed images exist; "
+                            "cannot map predictions back reliably. Saving in preprocessed space."
                         )
 
-                        # If any dimension is larger than raw_shape, raise an error instead of cropping
-                        too_large = any(a > b for a, b in zip(label_np.shape, raw_shape))
-                        if too_large:
-                            raise RuntimeError(
-                                f"Resampled label shape {label_np.shape} is larger than raw shape "
-                                f"{raw_shape} in at least one dimension; cannot match without cropping."
+                elif raw_source.is_dir():
+                    # Multi-volume mode: assume filenames match between raw and preprocessed dirs
+                    cand = raw_source / image_path.name
+                    if cand.is_file():
+                        raw_img_path = cand
+                    else:
+                        # fallback: match by stem (handles .nii vs .nii.gz mismatches)
+                        stem = image_path.name.split(".")[0]
+                        matches = sorted(raw_source.glob(stem + ".nii*"))
+                        if matches:
+                            raw_img_path = matches[0]
+                        else:
+                            logger.warning(
+                                f"Could not find raw image matching {image_path.name} in {raw_source}; "
+                                "saving in preprocessed space for this case."
                             )
 
-                        # Compute symmetric padding per dimension
-                        pad_width = []
-                        for a, b in zip(label_np.shape, raw_shape):
-                            diff = b - a
-                            before = diff // 2
-                            after = diff - before
-                            pad_width.append((before, after))
+            if raw_img_path is not None and Path(raw_img_path).is_file():
+                raw_nii = nib.load(str(raw_img_path))
 
-                        label_np = np.pad(
-                            label_np,
-                            pad_width=pad_width,
-                            mode="constant",
-                            constant_values=0,
-                        )
+                # Create a NIfTI for the prediction in *preprocessed* geometry
+                pred_pre_nii = nib.Nifti1Image(label_np.astype(np.uint8), affine=pre_nii.affine)
+
+                # Resample prediction onto the raw grid using world coordinates (nearest-neighbor)
+                pred_on_raw = resample_from_to(pred_pre_nii, raw_nii, order=0)
+
+                # Convert back to uint8 labels (resample returns float array)
+                label_np = np.rint(pred_on_raw.get_fdata()).astype(np.uint8)
 
             # Choose reference NIfTI for saving (raw if available, else preprocessed)
             if raw_nii is not None:
