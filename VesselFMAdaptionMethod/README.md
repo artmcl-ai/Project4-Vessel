@@ -152,7 +152,7 @@ python -m vesselfm.seg.eval_inference \
   /path/to/input_nifti_dir \
   /path/to/output_dir
 ```
-- From the Docker Image:
+- From the Docker Image [Download from here]](https://hub.docker.com/r/artmcl/vesselfm-av-eval):
 
 ```
 docker run --gpus all \
