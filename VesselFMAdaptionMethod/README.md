@@ -174,7 +174,9 @@ The Docker Image for the VesselFM 3-Class Adaptation approach can be accessed fr
                                                                                       vesselfm-av-eval \
                                                                                       python -m vesselfm.seg.eval_inference /input /output --labels_dir /labels```
 
-where '$PWD/input:/input' represents the directory with your inputs & $PWD/output:/output represents the directory where you want the prediction masks to be stored
+where '$PWD/input:/input:ro' represents the directory with your inputs & '$PWD/output:/output' represents the directory where you want the prediction masks to be stored.
+
+Additionally, '$PWD/labels:/labels:ro' can be added for an metric output that is saved with the predicted masks in '$PWD/output:/output'.
 
 ENSURE THAT THESE DIRECTORIES EXIST if you do not create the directories and store your inputs in the input folder then the docker will not run! The inputs should be .nii.gz images of non-contrast CT images.
 
@@ -193,4 +195,10 @@ ENSURE THAT THESE DIRECTORIES EXIST if you do not create the directories and sto
                                                                                       vesselfm-av-eval \
                                                                                       python -m vesselfm.seg.eval_inference /in.nii.gz /output/pred_mask_010.nii.gz --labels_dir /gt.nii.gz```
 
+where '$PWD/input/image_010.nii.gz:/in.nii.gz:ro' represents the filepath with your input image file of .nii.gz type & '$PWD/output:/output' represents the directory where you want the prediction masks to be stored.
+
+Additionally, '$PWD/labels/label_010.nii.gz:/gt.nii.gz:ro' can be added for an metric output that is saved with the predicted masks in '$PWD/output:/output'.
+
 The models are not stored in this repository, but they are contained in the image.
+
+':ro' is added onto the directories and files optionally to prevent accidental writes.
