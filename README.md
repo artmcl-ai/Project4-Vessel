@@ -53,7 +53,7 @@ The models are not stored in this repository, but they are contained in the imag
 
 ##  Docker for VesselFM 3-Class Adaptation Approach
 
-The Docker Image for the GNN approach can be accessed from: [https://hub.docker.com/r/artmcl/vesselfm-av-eval](https://hub.docker.com/r/artmcl/vesselfm-av-eval)
+The Docker Image for the VesselFM 3-Class Adaptation approach can be accessed from: [https://hub.docker.com/r/artmcl/vesselfm-av-eval](https://hub.docker.com/r/artmcl/vesselfm-av-eval)
 
 ### Directory Mode (Recommended)
 
