@@ -90,7 +90,7 @@ All model architecture and most utility code are copied from the public vesselFM
 
 > All other modules under `vesselfm/` are either unchanged from the upstream project or are slightly modified, and are not documented here individually. They include the core network definitions, configuration helpers, and support utilities provided by the original vesselFM authors.
 
-## VesselFM Credit
+## VesselFM Credit https://github.com/bwittmann/vesselFM/tree/main
 
 ```
 @InProceedings{Wittmann_2025_CVPR,
