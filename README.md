@@ -57,7 +57,10 @@ The Docker Image for the GNN approach can be accessed from: [https://hub.docker.
 
 ### Directory Mode (Recommended)
 
-- Run this command (Just Input Images Directory, No Metrics Output): ```docker run --rm --gpus all -v "$PWD/input:/input:ro" -v "$PWD/output:/output" vesselfm-av-eval```
+- Run this command (Just Input Images Directory, No Metrics Output): ```docker run --rm --gpus all \
+                                                                        -v "$PWD/input:/input:ro" \
+                                                                        -v "$PWD/output:/output" \
+                                                                        vesselfm-av-eval```
   
 - Run this command (Input Images Directory + GT Labels Directory, Metrics Output): ```docker run --rm --gpus all \
                                                                                       -v "$PWD/input:/input:ro" \
