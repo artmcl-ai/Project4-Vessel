@@ -2,7 +2,9 @@
 
 ## Overview
 
-This folder contains my adaptation of vesselFM for 3-class segmentation of non-contrast CT volumes into artery, vein, and background. It wraps the original vesselFM foundation model with additional training and evaluation code to support supervised fine-tuning on the EC500 artery/vein dataset and to export Dockerized inference compatible with the course evaluation interface.
+This folder contains the adaptation of vesselFM for 3-class segmentation of non-contrast CT volumes into artery, vein, and background. It wraps the original vesselFM foundation model with additional training and evaluation code to support supervised fine-tuning on the EC500 artery/vein dataset and to export Dockerized inference compatible with the course evaluation interface.
+
+<img width="839" height="465" alt="demo" src="https://github.com/user-attachments/assets/5263dd4b-77dc-4480-9796-960a76854a9e" />
 
 ## Upstream dependency
 
