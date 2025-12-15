@@ -380,7 +380,9 @@ def run_inference(cfg, raw_image_source=None, explicit_output_path=None):
             # Preds is a list of per-scale logits, each (3,D,H,W) on device
             logits_ensemble = torch.stack(preds).mean(dim=0)  # (3,D,H,W) on device
 
-            if hasattr(model, "av_refine_head"):
+            use_av_refine = getattr(cfg, "use_av_refine", False)
+
+            if use_av_refine and hasattr(model, "av_refine_head"):
                 # Stage-3 A/V refinement (same as eval_epoch(use_av_refine=True))
                 base_probs = F.softmax(
                     logits_ensemble.unsqueeze(0), dim=1
