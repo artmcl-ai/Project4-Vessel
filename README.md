@@ -55,7 +55,14 @@ The models are not stored in this repository, but they are contained in the imag
 
 The Docker Image for the GNN approach can be accessed from: [https://hub.docker.com/r/artmcl/vesselfm-av-eval](https://hub.docker.com/r/artmcl/vesselfm-av-eval)
 
-Run this command: ```docker run --gpus all -v $PWD/input:/input $PWD/output:/output vesselfm-av-eval```
+- Run this command (Just Input Images Directory, No Metrics Output): ```docker run --rm --gpus all -v "$PWD/input:/input:ro" -v "$PWD/output:/output" vesselfm-av-eval```
+  
+- Run this command (Input Images Directory + GT Labels Directory, Metrics Output): ```docker run --rm --gpus all \
+                                                                                      -v "$PWD/input:/input:ro" \
+                                                                                      -v "$PWD/labels:/labels:ro" \
+                                                                                      -v "$PWD/output:/output" \
+                                                                                      vesselfm-av-eval \
+                                                                                      python -m vesselfm.seg.eval_inference /input /output --labels_dir /labels```
 
 where '$PWD/input:/input' represents the directory with your inputs & $PWD/output:/output represents the directory where you want the prediction masks to be stored
 
