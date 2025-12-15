@@ -10,3 +10,8 @@ The file `False_Positive_and_Negative_Score.ipynb` is used to get the False Posi
 The file `dice_and_cldice.ipynb` is used to get the dice and cldice score
 
 ***
+
+## 📁 Inference Results from VesselFM Adaptation Method
+The file `Preprocessing_and_Inference.ipynb` is used to output predicted masks for VesselFM Adaptation Method
+
+***
