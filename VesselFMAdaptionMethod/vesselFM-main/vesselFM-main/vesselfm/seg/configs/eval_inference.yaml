@@ -31,7 +31,7 @@ model:
 # ------------------------------
 # Sliding window inferer
 # ------------------------------
-batch_size: 3
+batch_size: 2
 patch_size: [96, 96, 96]
 overlap: 0.5
 mode: "constant"
