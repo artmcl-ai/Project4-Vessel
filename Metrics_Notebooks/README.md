@@ -7,3 +7,8 @@ The file `False_Positive_and_Negative_Score.ipynb` is used to get the False Posi
 ***
 ***
 ***
+
+## 📁 Dice/clDice
+The file `dice_and_cldice.ipynb` is used to get the dice and cldice score
+
+***
