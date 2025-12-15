@@ -55,6 +55,8 @@ The models are not stored in this repository, but they are contained in the imag
 
 The Docker Image for the GNN approach can be accessed from: [https://hub.docker.com/r/artmcl/vesselfm-av-eval](https://hub.docker.com/r/artmcl/vesselfm-av-eval)
 
+### Directory Mode (Recommended)
+
 - Run this command (Just Input Images Directory, No Metrics Output): ```docker run --rm --gpus all -v "$PWD/input:/input:ro" -v "$PWD/output:/output" vesselfm-av-eval```
   
 - Run this command (Input Images Directory + GT Labels Directory, Metrics Output): ```docker run --rm --gpus all \
@@ -67,6 +69,21 @@ The Docker Image for the GNN approach can be accessed from: [https://hub.docker.
 where '$PWD/input:/input' represents the directory with your inputs & $PWD/output:/output represents the directory where you want the prediction masks to be stored
 
 ENSURE THAT THESE DIRECTORIES EXIST if you do not create the directories and store your inputs in the input folder then the docker will not run! The inputs should be .nii.gz images of non-contrast CT images.
+
+### Single-file Mode
+
+- Run this command (Just Input Image Filepath, No Metric Output): ```docker run --rm --gpus all \
+                                                                                      -v "$PWD/input/image_010.nii.gz:/in.nii.gz:ro" \
+                                                                                      -v "$PWD/output:/output" \
+                                                                                      vesselfm-av-eval \
+                                                                                      python -m vesselfm.seg.eval_inference /in.nii.gz /output/pred_mask_010.nii.gz```
+
+- Run this command (Input Image Filepath + GT Label Path, Metric Output): ```docker run --rm --gpus all \
+                                                                                      -v "$PWD/input/image_010.nii.gz:/in.nii.gz:ro" \
+                                                                                      -v "$PWD/labels/label_010.nii.gz:/gt.nii.gz:ro" \
+                                                                                      -v "$PWD/output:/output" \
+                                                                                      vesselfm-av-eval \
+                                                                                      python -m vesselfm.seg.eval_inference /in.nii.gz /output/pred_mask_010.nii.gz --labels_dir /gt.nii.gz```
 
 The models are not stored in this repository, but they are contained in the image.
 
