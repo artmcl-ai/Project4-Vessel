@@ -1,4 +1,4 @@
-## Installation of VesselFM Conda Environment
+## Installation of VesselFM Conda Environment (Not Required If Using Docker)
 
 First, set up a conda environment and install dependencies:
 
