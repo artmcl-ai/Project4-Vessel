@@ -42,7 +42,7 @@ use_av_refine: false
 # ------------------------------
 # Eval & reproducibility
 # ------------------------------
-seed: 404
+seed: 42
 
 # ------------------------------
 # Standard pre-processing transforms
