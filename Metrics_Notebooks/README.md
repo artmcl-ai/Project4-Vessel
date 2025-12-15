@@ -16,7 +16,7 @@ The file `Preprocessing_and_Inference.ipynb` is used to output predicted masks f
 
 ***
 
-## 📁 Dice
+## 📁 GNN Approach Dice Score
 The file `GNN-Dice_Score.ipynb` is used to calculate the dice of an individual mask compared against GT
 
 ***
