@@ -15,3 +15,9 @@ The file `dice_and_cldice.ipynb` is used to get the dice and cldice score
 The file `Preprocessing_and_Inference.ipynb` is used to output predicted masks for VesselFM Adaptation Method
 
 ***
+
+## 📁 Dice
+The file `GNN-Dice_Score.ipynb` is used to calculate the dice of an individual mask compared against GT
+
+***
+
